@@ -1,0 +1,2157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>HDF5 Data Viewer</title>
+<style>
+:root {
+  --bg-color: #ffffff; --text-color: #333333; --toolbar-bg: #f8f9fa;
+  --border-color: #dee2e6; --canvas-bg: #ffffff; --axis-color: #333333;
+  --grid-color: #e0e0e0; --profile-line: #000000; --input-bg: #ffffff;
+  --button-hover: #e9ecec; --status-color: #d62728;
+}
+body.dark-mode {
+  --bg-color: #1a1a2e; --text-color: #e0e0e0; --toolbar-bg: #16213e;
+  --border-color: #0f3460; --canvas-bg: #0d1117; --axis-color: #c9d1d9;
+  --grid-color: #21262d; --profile-line: #58a6ff; --input-bg: #0f3460;
+  --button-hover: #533483; --status-color: #ff6b6b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg-color); color: var(--text-color); overflow: hidden; transition: background 0.2s, color 0.2s; touch-action: none; }
+#app { display: flex; flex-direction: column; height: 100vh; }
+#toolbar { background: var(--toolbar-bg); padding: 10px 20px; display: flex; align-items: center; gap: 15px; border-bottom: 1px solid var(--border-color); flex-wrap: wrap; transition: background 0.2s, border-color 0.2s; }
+#toolbar h1 { font-size: 18px; color: var(--status-color); white-space: nowrap; }
+#toolbar button, #toolbar select, #toolbar input { background: var(--input-bg); color: var(--text-color); border: 1px solid var(--border-color); padding: 6px 10px; border-radius: 4px; font-size: 13px; transition: all 0.2s; }
+#toolbar button:hover { background: var(--button-hover); cursor: pointer; }
+#toolbar label { font-size: 13px; color: var(--text-color); display: flex; align-items: center; gap: 6px; }
+#themeBtn { font-size: 16px; padding: 4px 10px !important; line-height: 1; }
+#fileInfo { font-size: 13px; color: var(--text-color); flex-grow: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 150px; opacity: 0.8; }
+#status { font-size: 13px; color: var(--status-color); width: 100%; }
+#main { display: flex; flex: 1; overflow: hidden; }
+#plotArea { flex: 1; position: relative; background: var(--bg-color); overflow: hidden; padding: 5px; touch-action: none; transition: background 0.2s; }
+#canvasWrap { position: relative; width: 100%; height: 100%; }
+#heatmapCanvas, #overlayCanvas { position: absolute; left: 0; top: 0; width: 100%; height: 100%; touch-action: none; }
+#heatmapCanvas { cursor: crosshair; }
+#heatmapCanvas.panning { cursor: grabbing; }
+#overlayCanvas { pointer-events: none; }
+#profileArea { width: 380px; background: var(--bg-color); border-left: 1px solid var(--border-color); display: flex; flex-direction: column; overflow: hidden; transition: background 0.2s, border-color 0.2s; }
+.profilePanel { flex: 1; display: flex; flex-direction: column; padding: 10px; min-height: 0; }
+.profilePanel h3 { font-size: 14px; color: var(--status-color); margin-bottom: 8px; }
+.profileCanvas { flex: 1; background: var(--canvas-bg); border: 1px solid var(--border-color); border-radius: 4px; min-height: 0; width: 100%; transition: background 0.2s, border-color 0.2s; }
+#cursorInfo { padding: 8px 10px; font-size: 12px; color: var(--text-color); background: var(--bg-color); border-top: 1px solid var(--border-color); height: 120px; flex-shrink: 0; display: flex; flex-direction: column; transition: all 0.2s; }
+#cursorText { margin-bottom: 5px; opacity: 0.8; }
+#colorbar { display: block; cursor: pointer; width: 100%; max-width: 350px; height: 95px; flex-grow: 1; touch-action: none; }
+#loadOverlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+#loadOverlay .box { background: var(--toolbar-bg); padding: 30px 40px; border-radius: 10px; text-align: center; border: 1px solid var(--border-color); color: var(--text-color); }
+.spinner { border: 3px solid var(--border-color); border-top: 3px solid var(--status-color); border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; margin: 0 auto 15px; }
+@keyframes spin { 100% { transform: rotate(360deg); } }
+#ctxMenu { position: fixed; background: var(--input-bg); border: 1px solid var(--border-color); border-radius: 4px; box-shadow: 0 4px 12px rgba(0,0,0,0.2); z-index: 1000; min-width: 180px; display: none; color: var(--text-color); }
+#ctxMenu div { padding: 10px 15px; cursor: pointer; font-size: 13px; }
+#ctxMenu div:hover { background: var(--button-hover); }
+@media (max-width: 768px) {
+  #main { flex-direction: column; }
+  #plotArea { height: 55vh; flex: none; }
+  #profileArea { width: 100%; flex: 1; border-left: none; border-top: 1px solid var(--border-color); }
+  #cursorInfo { height: 100px; }
+  #fileInfo { order: 10; width: 100%; }
+  #status { order: 11; }
+  #toolbar { gap: 10px; }
+}
+@media print {
+  body { background: white !important; color: black !important; margin: 0; padding: 0; overflow: visible; }
+  body.dark-mode { --bg-color: #ffffff !important; --text-color: #333333 !important; --canvas-bg: #ffffff !important; --axis-color: #333333 !important; --grid-color: #e0e0e0 !important; --profile-line: #000000 !important; }
+  #toolbar, #loadOverlay, #fileInput, #ctxMenu, #profileArea { display: none !important; }
+  #overlayCanvas { display: none !important; }
+  #main { display: block; height: 100vh; width: 100vw; }
+  #plotArea { width: 100%; height: 100%; padding: 20px; border: none; overflow: visible; background: white !important; }
+  #canvasWrap { position: static; width: 100%; height: 100%; }
+  #heatmapCanvas { position: static; width: 100%; height: 100%; max-width: 100%; max-height: 100%; }
+}
+/* Analysis controls */
+#anaSigmaVal, #anaSensVal { font-size: 12px; min-width: 34px; display: inline-block; }
+#anaSigma, #anaSens { vertical-align: middle; }
+/* Fermi-level label: keep the F subscript tight against the E */
+label .efsub { font-size: 0.72em; margin-left: -0.12em; vertical-align: sub; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="toolbar">
+    <h1>🔬 HDF5 Viewer</h1>
+    <button onclick="loadFile()">📂 Load HDF5 File</button>
+    <button onclick="loadDemo()">📊 Load Demo Data</button>
+    <button onclick="resetView()">🔄 Reset View</button>
+    <button onclick="window.print()">🖨️ Save as PDF</button>
+    <button id="themeBtn" onclick="toggleTheme()">🌙</button>
+    <label>Colormap:
+      <select id="cmapSelect" onchange="changeColormap(this.value)">
+        <option value="inferno">Inferno</option>
+        <option value="viridis">Viridis</option>
+        <option value="plasma">Plasma</option>
+        <option value="grayscale">White to Black</option>
+        <option value="diverging">Navy-Red Diverging</option>
+      </select>
+    </label>
+    <label>Invert:
+      <input type="checkbox" id="invertCheckbox" onchange="toggleInvert()">
+    </label>
+    <label>Z-Range:
+      <input type="text" id="zminInput" style="width:70px" onchange="updateZRange()">
+      <span>to</span>
+      <input type="text" id="zmaxInput" style="width:70px" onchange="updateZRange()">
+    </label>
+    <label>Analysis:
+      <select id="anaMode" title="Derived image to display. Curvature modes follow Zhang et al., Rev. Sci. Instrum. 82, 043712 (2011)." onchange="onAnalysisMode()">
+        <option value="raw" selected>Raw</option>
+        <option value="sym">Fermi-symmetrized</option>
+        <option value="d2k">&#8706;&#178;I/&#8706;k&#178;</option>
+        <option value="d2w">&#8706;&#178;I/&#8706;&#969;&#178;</option>
+        <option value="grad">|&#8711;I|</option>
+        <option value="curv_k">Curvature (MDC-type)</option>
+        <option value="curv_w">Curvature (EDC-type)</option>
+        <option value="curv2d">Curvature 2D (w-mixed)</option>
+      </select>
+    </label>
+    <label>&#963;:
+      <input type="range" id="anaSigma" title="Smoothing scale for the derivative-of-Gaussian kernels. Larger = smoother, more noise-tolerant." min="0" max="8" step="0.25" value="2" style="width:70px" disabled oninput="onSigmaLabel()" onchange="onSigmaChange()">
+      <span id="anaSigmaVal">2.00</span>
+    </label>
+    <label>E<sub class="efsub">F</sub>:
+      <input type="text" id="anaEF" inputmode="decimal" placeholder="auto" style="width:60px"
+             title="Fermi level (same units as the Y axis) used by Fermi-symmetrized mode. Leave blank to symmetrize about the data centre."
+             onfocus="this.select()" onchange="onEFChange()">
+    </label>
+    <label>Ridge:
+      <input type="checkbox" id="anaRidge" title="Track the strongest dispersion crest per scan line (continuity-constrained DP) and overlay it on the map." disabled onchange="onRidgeToggle()">
+      <select id="anaOrient" title="Scan direction for the ridge: auto picks MDC (k per w) for k-derivatives, EDC (w per k) for energy-derivatives." disabled onchange="onOrientChange()">
+        <option value="auto">auto</option>
+        <option value="row">k(&#969;) MDC</option>
+        <option value="col">&#969;(k) EDC</option>
+      </select>
+      <select id="anaPolarity" title="Ridge polarity. Absolute tracks |curvature| (crests and troughs alike). Positive tracks only positive-curvature crests; Negative only the reverse. Use a signed mode to avoid locking onto a trough." disabled onchange="onPolarityChange()">
+        <option value="abs">abs</option>
+        <option value="pos">+ crest</option>
+        <option value="neg">&#8722; crest</option>
+      </select>
+    </label>
+    <label>w<sub>2D</sub>:
+      <input type="text" id="anaW2d" inputmode="decimal" placeholder="1" style="width:46px" disabled
+             title="MDC-curvature weight w in C2D = C_EDC + w*C_MDC (weight2d in Zhang et al.). Only used by Curvature 2D."
+             onfocus="this.select()" onchange="onW2dChange()">
+    </label>
+    <label>&#952;:
+      <input type="range" id="anaSens" title="Ridge threshold: a crest must exceed th x (p99.9 of |curvature|) to be tracked. Lower = more sensitive (noisier); higher = only the strongest crests." min="0.05" max="0.6" step="0.05" value="0.3" style="width:64px" disabled oninput="onSensLabel()" onchange="onSensChange()">
+      <span id="anaSensVal">0.30</span>
+      <button onclick="exportRidgeCSV()">&#11015; CSV</button>
+    </label>
+    <span id="fileInfo">No file loaded</span>
+    <span id="status"></span>
+  </div>
+  <div id="main">
+    <div id="plotArea">
+      <div id="canvasWrap">
+        <canvas id="heatmapCanvas"></canvas>
+        <canvas id="overlayCanvas"></canvas>
+      </div>
+    </div>
+    <div id="profileArea">
+      <div class="profilePanel">
+        <h3>Horizontal Profile (X)</h3>
+        <canvas class="profileCanvas" id="hProfileCanvas"></canvas>
+      </div>
+      <div class="profilePanel">
+        <h3>Vertical Profile (Y)</h3>
+        <canvas class="profileCanvas" id="vProfileCanvas"></canvas>
+      </div>
+      <div id="cursorInfo">
+        <div id="cursorText">Move cursor over plot</div>
+        <canvas id="colorbar"></canvas>
+      </div>
+    </div>
+  </div>
+</div>
+<div id="loadOverlay" style="display:none">
+  <div class="box">
+    <div class="spinner"></div>
+    <div id="loadText">Loading...</div>
+  </div>
+</div>
+<div id="ctxMenu">
+  <div onclick="window.print()">📄 Save as PDF</div>
+  <div onclick="savePNG()">🖼️ Save as PNG</div>
+  <div onclick="resetView()">🔄 Reset View</div>
+</div>
+<input type="file" id="fileInput" accept=".h5,.hdf5,.hdf" style="display:none">
+<script id="hdf5-parser-src">
+// ===== HDF5 Parser (DOM-free; doubles as the Web Worker body) =====
+// Reads two families of HDF5 files:
+//  A) Modern-style files (HDF5 1.8+ defaults): dataspace messages v2,
+//     contiguous v3 layouts, metadata as scalar string datasets
+//     (xunit/xlabel/xname/.../metadata) or attributes.
+//  B) IDL 7.0-style files (HDF5 1.6/1.7 era): superblock v0/v1, old-style
+//     symbol-table groups (B-tree + SNOD + local heap), v1 object headers,
+//     v1 dataspace messages, UPPERCASE metadata datasets.
+// parse(): structural (spec-based, targeted reads) FIRST; heuristic whole-file
+// byte-scan as fallback. Hot paths optimised: zero-copy/bulk typed-array
+// element reads + single-pass metadata scan.
+const H5_IS_LE = (function () { try { return new Uint8Array(new Uint32Array([1]).buffer)[0] === 1; } catch (e) { return true; } })();
+const H5_MAX_VALUES = 1 << 24; // viewer cap ~16.7M values (134 MB as f64)
+class HDF5Parser {
+  constructor(buffer) { this.raw = new Uint8Array(buffer); this.dv = new DataView(buffer); this.sso = 8; this.ssl = 8; }
+  u16(off) { return this.dv.getUint16(off, true); }
+  u32(off) { return this.dv.getUint32(off, true); }
+  u64(off) { return this.dv.getUint32(off, true) + this.dv.getUint32(off + 4, true) * 0x100000000; }
+  f64(off) { return this.dv.getFloat64(off, true); }
+  // Vertically flips the 2D image array (row 0 <-> last row) so the image displays
+  // right-side-up for the viewer's axis convention. yaxis.values is left UNCHANGED.
+  flipRows(res) {
+    if (!res || !res.array || !res.array.values) return res;
+    const dims = res.array.dims;
+    if (!dims || dims.length < 2) return res;
+    const ny = dims[0], nx = dims[1];
+    if (ny < 2 || nx < 1) return res;
+    const srcA = res.array.values;
+    const out = new Float64Array(srcA.length);
+    for (let r = 0; r < ny; r++) {
+      const srcRow = (ny - 1 - r) * nx;
+      const dstRow = r * nx;
+      for (let c = 0; c < nx; c++) out[dstRow + c] = srcA[srcRow + c];
+    }
+    res.array.values = out;
+    return res;
+  }
+  parse() {
+    if (this.raw[0] !== 0x89 || this.raw[1] !== 0x48) throw new Error("Not HDF5");
+    let structuralErr = null;
+    let res = null;
+    try { res = this.parseStructural(); }
+    catch (err) { structuralErr = err; }
+    if (!res) {
+      try { res = this.extractData(); }
+      catch (err) {
+        throw new Error("Unrecognized HDF5 layout (structural: " + (structuralErr ? structuralErr.message : "no match") + "; heuristic scan: " + err.message + ")");
+      }
+    }
+    return this.flipRows(res);
+  }
+  findSuperblock() {
+    const sig = [0x89, 0x48, 0x44, 0x46, 0x0d, 0x0a, 0x1a, 0x0a];
+    const spots = [0, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144];
+    for (const sb of spots) {
+      if (sb + 13 > this.raw.length) break;
+      let ok = true;
+      for (let i = 0; i < 8; i++) { if (this.raw[sb + i] !== sig[i]) { ok = false; break; } }
+      if (!ok) continue;
+      const ver = this.raw[sb + 8];
+      if (ver === 0 || ver === 1) {
+        this.sso = this.raw[sb + 13]; this.ssl = this.raw[sb + 14];
+        if (this.sso !== 8 || this.ssl !== 8) return null;
+        return sb + 56;
+      }
+      return null; // superblock v2/v3 -> byte-scan fallback
+    }
+    return null;
+  }
+  readV1Messages(addr) {
+    if (this.raw[addr] !== 1) throw new Error("object header v" + this.raw[addr] + " (expected v1)");
+    const msgs = [];
+    let nmsg = this.u16(addr + 2); if (nmsg > 4096) nmsg = 4096;
+    let chunkBase = addr, rel = 16, relEnd = 16 + this.u32(addr + 8);
+    let count = 0, safety = 0;
+    while (count < nmsg && safety++ < 512) {
+      const pos = chunkBase + rel;
+      if (rel + 8 > relEnd || pos + 8 > this.raw.length) break;
+      const type = this.raw[pos];
+      if (type === 0x10) {
+        const caddr = this.u64(pos + 8), clen = this.u64(pos + 8 + this.sso);
+        if (!caddr || caddr >= this.raw.length || !clen || caddr + clen > this.raw.length + 8) break;
+        chunkBase = caddr; rel = 0; relEnd = clen; continue;
+      }
+      const msize = this.u16(pos + 2);
+      const body = pos + 8;
+      if (body + msize > this.raw.length) break;
+      msgs.push({ type: type, size: msize, flags: this.raw[pos + 4], body: body });
+      count++;
+      rel = (rel + 8 + msize + 7) & ~7;
+    }
+    return msgs;
+  }
+  isPrintableName(s) {
+    if (!s || s.length < 1) return false;
+    for (let i = 0; i < s.length; i++) { const c = s.charCodeAt(i); if (c < 32 || c > 126) return false; }
+    return true;
+  }
+  resolveHeapData(heap, nameOffsets) {
+    const cands = [];
+    const push = a => { if (a !== undefined && a !== null && a >= 0 && a < this.raw.length && cands.indexOf(a) === -1) cands.push(a); };
+    push(this.u64(heap + 8 + 2 * this.sso));
+    push(this.u64(heap + 16));
+    push(heap + this.u64(heap + 16));
+    push(heap + this.u64(heap + 8 + 2 * this.sso));
+    if (!nameOffsets.length) return cands.length ? cands[0] : heap + 8;
+    for (const c of cands) {
+      let ok = true;
+      for (const no of nameOffsets.slice(0, 24)) {
+        const s = this.heapStringPredict(c, no);
+        if (!this.isPrintableName(s)) { ok = false; break; }
+      }
+      if (ok) return c;
+    }
+    return cands.length ? cands[0] : heap + 8;
+  }
+  heapStringPredict(heapData, nameOff) {
+    const start = heapData + nameOff;
+    if (start < 0 || start >= this.raw.length) return null;
+    let end = start;
+    const lim = Math.min(this.raw.length, start + 512);
+    while (end < lim && this.raw[end] !== 0) end++;
+    let s = "";
+    for (let i = start; i < end; i++) s += String.fromCharCode(this.raw[i]);
+    return s;
+  }
+  heapString(heapData, nameOff) {
+    const start = heapData + nameOff;
+    if (!isFinite(start) || start < 0 || start >= this.raw.length) return null;
+    let end = start;
+    const lim = Math.min(this.raw.length, start + 512);
+    while (end < lim && this.raw[end] !== 0) end++;
+    let s = "";
+    for (let i = start; i < end; i++) s += String.fromCharCode(this.raw[i]);
+    return s;
+  }
+  collectSNods(addr, acc, depth) {
+    if (depth > 6 || acc.length > 4096) return;
+    if (addr < 24 || addr + 24 > this.raw.length) return;
+    if (this.raw[addr] !== 0x54 || this.raw[addr+1] !== 0x52 || this.raw[addr+2] !== 0x45 || this.raw[addr+3] !== 0x45) return;
+    const level = this.raw[addr + 5], used = this.u16(addr + 6);
+    if (level === 0) {
+      for (let i = 0; i < used; i++) {
+        const snod = this.u64(addr + 24 + 16 * i + 8);
+        if (snod >= 8 && snod + 8 <= this.raw.length) acc.push(snod);
+      }
+    } else {
+      for (let i = 0; i <= used; i++) this.collectSNods(this.u64(addr + 24 + 16 * i + 8), acc, depth + 1);
+    }
+  }
+  visitObject(ohdr, name, out, depth) {
+    if (depth > 32 || ohdr < 16 || ohdr + 16 > this.raw.length) return;
+    let msgs;
+    try { msgs = this.readV1Messages(ohdr); } catch (err) { return; }
+    let symTab = null;
+    for (const m of msgs) if (m.type === 0x11) { symTab = m; break; }
+    if (symTab) {
+      const bt = this.u64(symTab.body), heap = this.u64(symTab.body + this.sso);
+      if (bt >= this.raw.length || heap + 2 * this.sso + 2 * this.ssl > this.raw.length) return;
+      const snods = [];
+      this.collectSNods(bt, snods, 0);
+      const nameOffsets = [];
+      for (const snod of snods) {
+        if (this.raw[snod] !== 0x53 || this.raw[snod+1] !== 0x4e || this.raw[snod+2] !== 0x4f || this.raw[snod+3] !== 0x44) continue;
+        const nsym = this.u16(snod + 6);
+        for (let i = 0; i < nsym; i++) {
+          const e = snod + 8 + 40 * i;
+          if (e + 40 > this.raw.length) break;
+          if (this.u64(e + 8) > 0) nameOffsets.push(this.u64(e));
+        }
+      }
+      const heapData = this.resolveHeapData(heap, nameOffsets);
+      for (const snod of snods) {
+        if (this.raw[snod] !== 0x53 || this.raw[snod+1] !== 0x4e || this.raw[snod+2] !== 0x4f || this.raw[snod+3] !== 0x44) continue;
+        const nsym = this.u16(snod + 6);
+        for (let i = 0; i < nsym; i++) {
+          const e = snod + 8 + 40 * i;
+          if (e + 40 > this.raw.length) break;
+          const nameOff = this.u64(e), objHdr = this.u64(e + 8);
+          if (!objHdr || objHdr + 16 > this.raw.length) continue;
+          const cname = this.heapString(heapData, nameOff);
+          if (!cname || !this.isPrintableName(cname)) continue;
+          this.visitObject(objHdr, name ? name + "/" + cname : cname, out, depth + 1);
+        }
+      }
+      return;
+    }
+    this.readDatasetObject(msgs, name, out);
+  }
+  decodeDataspace(body) {
+    const ver = this.raw[body], nd = this.raw[body + 1];
+    if (nd > 32) throw new Error("bad dataspace nd=" + nd);
+    const dims = [];
+    if (ver === 1) { for (let i = 0; i < nd; i++) dims.push(this.u64(body + 8 + 8 * i)); }
+    else if (ver === 2) { for (let i = 0; i < nd; i++) dims.push(this.u64(body + 4 + 8 * i)); }
+    else throw new Error("unsupported dataspace message v" + ver);
+    return { nd: nd, dims: dims };
+  }
+  decodeLayout(body) {
+    const ver = this.raw[body], b1 = this.raw[body + 1];
+    if (ver === 3) {
+      const cls = b1;
+      if (cls === 1) return { cls: 1, addr: this.u64(body + 2), size: this.u64(body + 10) };
+      if (cls === 0) return { cls: 0, size: this.u32(body + 2), inlineOff: body + 6 };
+      if (cls === 2) return { cls: 2 };
+      throw new Error("unsupported data layout class " + cls);
+    }
+    if (ver === 2) { // old HDF5 1.6-era layout
+      const nd = b1, cls = this.raw[body + 2];
+      const sizes = [];
+      for (let i = 0; i < nd && i < 32; i++) sizes.push(this.u32(body + 16 + 4 * i));
+      let total = 1;
+      for (const s of sizes) total *= s;
+      if (cls === 1) return { cls: 1, addr: this.u64(body + 8), size: total || sizes[0] || 0 };
+      if (cls === 0) return { cls: 0, size: total || sizes[0] || 0, inlineOff: body + 16 + 4 * sizes.length };
+      if (cls === 2) return { cls: 2 };
+      throw new Error("unsupported old data layout class " + cls);
+    }
+    throw new Error("unsupported data layout v" + ver);
+  }
+  decodeDatatype(body, ds, lay) {
+    const b0 = this.raw[body], ver = b0 >> 4, cls = b0 & 0x0f;
+    if (cls !== 0 && cls !== 1 && cls !== 3) throw new Error("unsupported datatype class " + cls);
+    let exp = null;
+    if (lay.cls === 1 && lay.size > 0) {
+      if (ds.nd > 0) { let n = 1; for (const d of ds.dims) n *= d; if (n > 0 && lay.size % n === 0) exp = lay.size / n; }
+      else exp = lay.size;
+    }
+    const cand = [];
+    if (ver === 1) cand.push(this.u32(body + 4));
+    else { cand.push(this.u32(body + 3)); cand.push(this.u32(body + 4)); cand.push(this.u32(body + 2)); }
+    let size = cand[0];
+    if (exp !== null && cand.indexOf(exp) !== -1) size = exp;
+    if (size < 1 || size > 65536) throw new Error("bad element size " + size);
+    const bf = this.u16(body + 1);
+    return { cls: cls, size: size, orderLE: (bf & 1) === 0 };
+  }
+  decodeAttribute(body, size) {
+    const ver = this.raw[body];
+    if (ver < 1 || ver > 3) throw new Error("attr v" + ver);
+    const pad = ver < 3;
+    const nameSize = this.u16(body + 2);
+    const dtSize = this.u16(body + 4);
+    const dsSize = this.u16(body + 6);
+    if (nameSize > 4096 || dtSize > 4096 || dsSize > 4096) throw new Error("attr too big");
+    let p = body + 8;
+    let name = "";
+    for (let i = 0; i < nameSize; i++) { const c = this.raw[p + i]; if (c === 0) break; name += String.fromCharCode(c); }
+    p += nameSize; if (pad) p = (p + 7) & ~7;
+    const dt = p; p += dtSize; if (pad) p = (p + 7) & ~7;
+    p += dsSize; if (pad) p = (p + 7) & ~7;
+    const dataOff = p;
+    const b0 = this.raw[dt], acls = b0 & 0x0f, aver = b0 >> 4;
+    const asize = aver === 1 ? this.u32(dt + 4) : this.u32(dt + 3);
+    const le = (this.u16(dt + 1) & 1) === 0;
+    let value = null;
+    if (acls === 3) {
+      let s = "";
+      const n = Math.min(asize, body + size - dataOff);
+      for (let i = 0; i < n; i++) { const c = this.raw[dataOff + i]; if (c === 0) break; s += String.fromCharCode(c); }
+      for (let i = 0; i < s.length; i++) { const c = s.charCodeAt(i); if (c < 32 || c > 126) return null; }
+      value = s;
+    } else if (asize === 8) value = this.dv.getFloat64(dataOff, le);
+    else if (asize === 4) value = acls === 1 ? this.dv.getFloat32(dataOff, le) : this.dv.getInt32(dataOff, le);
+    else if (asize === 2) value = this.dv.getInt16(dataOff, le);
+    else if (asize === 1) value = this.raw[dataOff];
+    return { name: name, value: value };
+  }
+  readDatasetObject(msgs, name, out) {
+    let dspace = null, dtype = null, layout = null;
+    const attrs = [];
+    for (const m of msgs) {
+      if (m.type === 1) { if (!dspace) dspace = m; }
+      else if (m.type === 3) { if (!dtype) dtype = m; }
+      else if (m.type === 8) { if (!layout) layout = m; }
+      else if (m.type === 0x0c) attrs.push(m);
+    }
+    if (!dspace || !dtype || !layout) return;
+    let ds, lay, dt;
+    try {
+      ds = this.decodeDataspace(dspace.body);
+      lay = this.decodeLayout(layout.body);
+      dt = this.decodeDatatype(dtype.body, ds, lay);
+    } catch (err) { return; }
+    if (lay.cls === 2) return; // chunked: not handled structurally
+    const d = { name: name, nd: ds.nd, dims: ds.dims, cls: dt.cls, elemSize: dt.size, orderLE: dt.orderLE, lay: lay, str: null, attrs: {} };
+    for (const a of attrs) {
+      try { const at = this.decodeAttribute(a.body, a.size); if (at && at.name) d.attrs[at.name] = at.value; } catch (err) {}
+    }
+    if (d.nd === 0 && dt.cls === 3) {
+      const off = lay.cls === 1 ? lay.addr : lay.inlineOff;
+      const len = lay.cls === 1 ? (lay.size || dt.size) : lay.size;
+      if (off + len <= this.raw.length) {
+        let s = "";
+        for (let i = 0; i < len; i++) { const c = this.raw[off + i]; if (c === 0) break; s += String.fromCharCode(c); }
+        d.str = s;
+      }
+    }
+    out.push(d);
+  }
+  parseStructural() {
+    const ste = this.findSuperblock();
+    if (ste === null || ste + 40 > this.raw.length) return null;
+    const rootOhdr = this.u64(ste + this.sso);
+    if (!rootOhdr || rootOhdr + 16 > this.raw.length) return null;
+    const list = [];
+    this.visitObject(rootOhdr, "", list, 0);
+    if (!list.length) return null;
+    let arrDS = null;
+    for (const d of list) {
+      if (d.nd === 2 && (d.cls === 1 || d.cls === 0)) {
+        const n = d.dims[0] * d.dims[1];
+        if (n > 0 && (!arrDS || n > arrDS.dims[0] * arrDS.dims[1])) arrDS = d;
+      }
+    }
+    if (!arrDS) return null;
+    const ny = arrDS.dims[0], nx = arrDS.dims[1];
+    if (ny < 1 || nx < 1) return null;
+    if (ny * nx > H5_MAX_VALUES) throw new Error("2D dataset too large for this viewer (" + (ny * nx).toExponential(2) + " values; max " + H5_MAX_VALUES + ")");
+    const isNum = d => d.cls === 1 || d.cls === 0;
+    const xs = list.filter(d => d.nd === 1 && isNum(d) && d.dims[0] === nx);
+    const ys = list.filter(d => d.nd === 1 && isNum(d) && d.dims[0] === ny);
+    const pick = (cands, prefs) => { for (const p of prefs) { const m = cands.find(d => d.name && p.test(d.name)); if (m) return m; } return cands.length ? cands[0] : null; };
+    const xDS = pick(xs, [/^xaxis$/i, /x[ _-]?axis/i, /^x/i]);
+    const yDS = pick(ys, [/^yaxis$/i, /y[ _-]?axis/i, /^y/i]);
+    const meta = { x: { name: "", label: "", unit: "" }, y: { name: "", label: "", unit: "" }, array: { name: "", label: "", unit: "" }, objectName: "" };
+    const put = (k, v) => {
+      if (v === null || v === undefined || v === "") return;
+      if (k === "xlabel") meta.x.label = v; else if (k === "xname") meta.x.name = v; else if (k === "xunit") meta.x.unit = v;
+      else if (k === "ylabel") meta.y.label = v; else if (k === "yname") meta.y.name = v; else if (k === "yunit") meta.y.unit = v;
+      else if (k === "label") meta.array.label = v; else if (k === "unit") meta.array.unit = v; else if (k === "name") meta.array.name = v;
+      else if (k === "metadata") meta.objectName = v; else if (k === "object" && !meta.objectName) meta.objectName = v;
+    };
+    for (const d of list) if (d.nd === 0 && d.cls === 3 && d.name) put(d.name.toLowerCase(), d.str);
+    for (const d of [xDS, yDS, arrDS]) if (d && d.attrs) for (const k in d.attrs) put(k, d.attrs[k]);
+    // Bulk numeric reader: fast path reinterprets buffer directly as typed array.
+    const readNum = (d, n) => {
+      const off = d.lay.cls === 1 ? d.lay.addr : d.lay.inlineOff;
+      const es = d.elemSize, le = d.orderLE;
+      if (off < 0 || off + es * n > this.raw.length) throw new Error("dataset data out of range");
+      if (H5_IS_LE && le && (d.cls === 0 || d.cls === 1)) {
+        if (es === 8 && off % 8 === 0) return new Float64Array(this.dv.buffer, off, n);
+        if (es === 4 && off % 4 === 0) {
+          const vals = new Float64Array(n);
+          if (d.cls === 1) { const s = new Float32Array(this.dv.buffer, off, n); for (let i = 0; i < n; i++) vals[i] = s[i]; }
+          else { const s = new Int32Array(this.dv.buffer, off, n); for (let i = 0; i < n; i++) vals[i] = s[i]; }
+          return vals;
+        }
+        if (es === 2 && off % 2 === 0) { const vals = new Float64Array(n); const s = new Int16Array(this.dv.buffer, off, n); for (let i = 0; i < n; i++) vals[i] = s[i]; return vals; }
+        if (es === 1) { const vals = new Float64Array(n); for (let i = 0; i < n; i++) vals[i] = this.raw[off + i]; return vals; }
+      }
+      const vals = new Float64Array(n);
+      for (let i = 0; i < n; i++) {
+        const o = off + i * es;
+        if (d.cls === 1 && es === 8) vals[i] = this.dv.getFloat64(o, le);
+        else if (d.cls === 1 && es === 4) vals[i] = this.dv.getFloat32(o, le);
+        else if (d.cls === 0 && es === 8) vals[i] = this.dv.getFloat64(o, le);
+        else if (d.cls === 0 && es === 4) vals[i] = this.dv.getInt32(o, le);
+        else if (d.cls === 0 && es === 2) vals[i] = this.dv.getInt16(o, le);
+        else if (d.cls === 0 && es === 1) vals[i] = this.raw[o];
+        else throw new Error("unsupported numeric type (class " + d.cls + ", " + es + " bytes)");
+      }
+      return vals;
+    };
+    const idxAxis = n => { const a = new Float64Array(n); for (let i = 0; i < n; i++) a[i] = i; return a; };
+    const safeNum = (d, n) => { if (!d) return null; try { return readNum(d, n); } catch (e) { return null; } };
+    const xvals = safeNum(xDS, nx) || idxAxis(nx);
+    const yvals = safeNum(yDS, ny) || idxAxis(ny);
+    const vals = readNum(arrDS, ny * nx);
+    let finite = 0;
+    for (let i = 0; i < vals.length && i < 5000; i++) if (isFinite(vals[i])) finite++;
+    if (finite === 0) return null;
+    return {
+      xaxis: { values: xvals, name: meta.x.name, label: meta.x.label, unit: meta.x.unit },
+      yaxis: { values: yvals, name: meta.y.name, label: meta.y.label, unit: meta.y.unit },
+      array: { values: vals, dims: [ny, nx], name: meta.array.name, label: meta.array.label, unit: meta.array.unit },
+      objectName: meta.objectName || "Data2d"
+    };
+  }
+  extractData() {
+    const ds = [], lay = [];
+    for (let i = 0; i < this.raw.length - 20; i++) {
+      if (this.raw[i]===0x02 && this.raw[i+1]===0x01 && this.raw[i+2]===0x01 && this.raw[i+3]===0x01) { const d = this.u64(i+4); if (d>1 && d<1e6) ds.push({off:i, nd:1, dims:[d]}); }
+      if (this.raw[i]===0x02 && this.raw[i+1]===0x02 && this.raw[i+2]===0x01 && this.raw[i+3]===0x01) { const d1=this.u64(i+4), d2=this.u64(i+12); if (d1>1&&d1<1e6&&d2>1&&d2<1e6) ds.push({off:i, nd:2, dims:[d1,d2]}); }
+      if (this.raw[i]===0x03 && this.raw[i+1]===0x01) { const a=this.u64(i+2), s=this.u64(i+10); if (a>0&&a<this.raw.length&&s>0&&s<this.raw.length) lay.push({off:i, addr:a, size:s}); }
+    }
+    ds.sort((a,b)=>a.off-b.off); lay.sort((a,b)=>a.off-b.off);
+    const sets = []; for (const d of ds) { for (const l of lay) { if (l.off > d.off && l.off < d.off + 300) { sets.push({...d, ...l}); break; } } }
+    let aDS=null, a1=null, a2=null;
+    for (const s of sets) { if (s.nd===2) aDS=s; else if (s.nd===1) { if (!a1||s.dims[0]>a1.dims[0]) { a2=a1; a1=s; } else a2=s; } }
+    if (!aDS||!a1||!a2) throw new Error("Datasets not found");
+    let xDS, yDS;
+    if (a1.dims[0]===aDS.dims[1] && a2.dims[0]===aDS.dims[0]) { xDS=a1; yDS=a2; }
+    else if (a2.dims[0]===aDS.dims[1] && a1.dims[0]===aDS.dims[0]) { xDS=a2; yDS=a1; }
+    else { xDS=a1; yDS=a2; }
+    const nMain = aDS.dims[0] * aDS.dims[1];
+    if (nMain > H5_MAX_VALUES) throw new Error("2D dataset too large for this viewer (" + nMain + " values; max " + H5_MAX_VALUES + ")");
+    const xa = this.readF64Bulk(xDS.addr, xDS.dims[0]), ya = this.readF64Bulk(yDS.addr, yDS.dims[0]);
+    const arr = this.readF64Bulk(aDS.addr, nMain);
+    const meta = this.extractMetadata();
+    return { xaxis:{values:xa, ...meta.xaxis}, yaxis:{values:ya, ...meta.yaxis}, array:{values:arr, dims:aDS.dims, ...meta.array}, objectName: meta.objectName || "Data2d" };
+  }
+  readF64Bulk(addr, n) {
+    if (H5_IS_LE && addr >= 0 && addr % 8 === 0 && addr + 8 * n <= this.raw.length) return new Float64Array(this.dv.buffer, addr, n);
+    const r = new Float64Array(n); for (let i=0; i<n; i++) r[i]=this.f64(addr+i*8); return r;
+  }
+  extractMetadata() {
+    // single O(filesize) pass for all attribute names (original rescanned once per name)
+    const m = { xaxis:{name:'',label:'',unit:''}, yaxis:{name:'',label:'',unit:''}, array:{name:'',label:'',unit:''}, objectName:'' };
+    const attrs = ['xunit','xlabel','xname','yunit','ylabel','yname','unit','label','name','metadata'];
+    const byFirst = Object.create(null);
+    for (let k = 0; k < attrs.length; k++) {
+      const f = attrs[k].charCodeAt(0);
+      (byFirst[f] || (byFirst[f] = [])).push(attrs[k]);
+    }
+    const foundOnce = Object.create(null);
+    const raw = this.raw, len = raw.length;
+    for (let i = 1; i < len - 20; i++) {
+      const cands = byFirst[raw[i]];
+      if (!cands) continue;
+      let an = null;
+      for (let c = 0; c < cands.length; c++) {
+        const cand = cands[c];
+        let ok = true;
+        for (let j = 1; j < cand.length; j++) { if (raw[i + j] !== cand.charCodeAt(j)) { ok = false; break; } }
+        if (ok) { an = cand; break; }
+      }
+      if (!an || foundOnce[an]) continue;
+      if (raw[i - 1] !== an.length) continue;
+      const ohdrAddr = this.u64(i + an.length);
+      if (ohdrAddr === 0 || ohdrAddr >= len) continue;
+      let dataAddr = 0, dataSize = 0;
+      const lim = Math.min(ohdrAddr + 300, len - 20);
+      for (let p = ohdrAddr; p < lim; p++) {
+        if (raw[p] === 0x03 && raw[p + 1] === 0x01) {
+          dataAddr = this.u64(p + 2);
+          dataSize = this.u64(p + 10);
+          break;
+        }
+      }
+      if (dataAddr > 0 && dataSize > 0 && dataSize < 1000 && dataAddr + dataSize <= len) {
+        const v = new TextDecoder().decode(raw.subarray(dataAddr, dataAddr + dataSize));
+        if (an==='xunit') m.xaxis.unit=v; else if(an==='xlabel') m.xaxis.label=v;
+        else if(an==='xname') m.xaxis.name=v; else if(an==='yunit') m.yaxis.unit=v;
+        else if(an==='ylabel') m.yaxis.label=v; else if(an==='yname') m.yaxis.name=v;
+        else if(an==='unit') m.array.unit=v; else if(an==='label') m.array.label=v;
+        else if(an==='name') m.array.name=v; else if(an==='metadata') m.objectName=v;
+        foundOnce[an] = true;
+      }
+    }
+    return m;
+  }
+}
+</script>
+<script id="analysis-src">
+// ===== Dispersion analysis module (shared by page and worker) =====
+// Second-derivative and curvature images (Zhang et al., Rev. Sci. Instrum. 82,
+// 043712 (2011)) plus continuity-tracked ridge (dispersion) extraction, and a
+// small ARPES toolkit (Fermi-level symmetrization, EDC/MDC peak fitting).
+// Pure functions, DOM-free: executed in the page (no-worker fallback) and
+// appended into the parse worker (off-main-thread analysis).
+function anaKernels(sigma) {
+  if (!(sigma > 0)) return { r: 1, d: [-0.5, 0.0, 0.5], dd: [1.0, -2.0, 1.0] };
+  const r = Math.max(1, Math.ceil(3.5 * sigma)), n = 2 * r + 1;
+  const g = new Array(n); let gs = 0;
+  for (let t = 0; t < n; t++) { const m = t - r; g[t] = Math.exp(-(m * m) / (2 * sigma * sigma)); gs += g[t]; }
+  const d = new Array(n), dd = new Array(n);
+  let md = 0, mdd = 0;
+  for (let t = 0; t < n; t++) {
+    const m = t - r, gg = g[t] / gs;
+    d[t] = (m / (sigma * sigma)) * gg;
+    dd[t] = ((m * m) / (sigma * sigma * sigma * sigma) - 1 / (sigma * sigma)) * gg;
+    md += d[t]; mdd += dd[t];
+  }
+  md /= n; mdd /= n;
+  let s1 = 0, s2 = 0;
+  for (let t = 0; t < n; t++) { const m = t - r; d[t] -= md; dd[t] -= mdd; }
+  for (let t = 0; t < n; t++) { const m = t - r; s1 += m * d[t]; s2 += m * m * dd[t]; }
+  for (let t = 0; t < n; t++) { d[t] /= s1; dd[t] *= 2.0 / s2; }
+  return { r: r, d: d, dd: dd };
+}
+function anaConvRows(A, nx, ny, k, scale) { // differentiate along x, edge-clamped
+  const r = k.length >> 1, out = new Float64Array(nx * ny);
+  for (let j = 0; j < ny; j++) {
+    const off = j * nx;
+    for (let i = 0; i < nx; i++) {
+      let a = 0;
+      for (let t = 0; t < k.length; t++) {
+        let p = i + t - r; if (p < 0) p = 0; else if (p >= nx) p = nx - 1;
+        a += k[t] * A[off + p];
+      }
+      out[off + i] = a * scale;
+    }
+  }
+  return out;
+}
+function anaConvCols(A, nx, ny, k, scale) { // differentiate along y, edge-clamped
+  const r = k.length >> 1, out = new Float64Array(nx * ny);
+  for (let i = 0; i < nx; i++) {
+    for (let j = 0; j < ny; j++) {
+      let a = 0;
+      for (let t = 0; t < k.length; t++) {
+        let p = j + t - r; if (p < 0) p = 0; else if (p >= ny) p = ny - 1;
+        a += k[t] * A[p * nx + i];
+      }
+      out[j * nx + i] = a * scale;
+    }
+  }
+  return out;
+}
+function anaAxisUniform(ax) {
+  const n = ax.length;
+  if (n < 2) return true;
+  const d0 = ax[1] - ax[0];
+  if (d0 === 0) return false;
+  for (let i = 2; i < n; i++) { if (Math.abs((ax[i] - ax[i - 1]) - d0) > 1e-6 * Math.abs(d0)) return false; }
+  return true;
+}
+function anaResampleColumns(A, nx, ny, ax) { // linear resample along x to uniform, same count
+  const u = new Float64Array(nx);
+  u[0] = ax[0]; u[nx - 1] = ax[nx - 1];
+  for (let i = 1; i < nx - 1; i++) u[i] = ax[0] + (ax[nx - 1] - ax[0]) * (i / (nx - 1));
+  const out = new Float64Array(nx * ny);
+  const ascX = ax[nx - 1] >= ax[0]; // axes may be descending; search direction must follow
+  for (let j = 0; j < ny; j++) {
+    const off = j * nx;
+    for (let i = 0; i < nx; i++) {
+      const x = u[i];
+      let lo = 0;
+      if (ascX) { while (lo < nx - 2 && ax[lo + 1] < x) lo++; }
+      else { while (lo < nx - 2 && ax[lo + 1] > x) lo++; }
+      const x0 = ax[lo], x1 = ax[lo + 1];
+      const f = x1 === x0 ? 0 : (x - x0) / (x1 - x0);
+      out[off + i] = A[off + lo] * (1 - f) + A[off + lo + 1] * f;
+    }
+  }
+  return { vals: out, ax: u };
+}
+function anaResampleRows(A, nx, ny, ay) {
+  const u = new Float64Array(ny);
+  u[0] = ay[0]; u[ny - 1] = ay[ny - 1];
+  for (let j = 1; j < ny - 1; j++) u[j] = ay[0] + (ay[ny - 1] - ay[0]) * (j / (ny - 1));
+  const out = new Float64Array(nx * ny);
+  const ascY = ay[ny - 1] >= ay[0]; // axes may be descending; search direction must follow
+  for (let i = 0; i < nx; i++) {
+    for (let j = 0; j < ny; j++) {
+      const yv = u[j];
+      let lo = 0;
+      if (ascY) { while (lo < ny - 2 && ay[lo + 1] < yv) lo++; }
+      else { while (lo < ny - 2 && ay[lo + 1] > yv) lo++; }
+      const y0 = ay[lo], y1 = ay[lo + 1];
+      const f = y1 === y0 ? 0 : (yv - y0) / (y1 - y0);
+      out[j * nx + i] = A[lo * nx + i] * (1 - f) + A[(lo + 1) * nx + i] * f;
+    }
+  }
+  return { vals: out, ay: u };
+}
+// ARPES: Fermi-level symmetrization I(k,w) -> [I(k,w) + I(k,-w)]/2 about E_F.
+// ef is in the SAME units as the provided y-axis; we locate the nearest row and mirror
+// about it with linear interpolation so the result lives on the original grid.
+function anaSymmetrize(A, nx, ny, yax, ef) {
+  const out = new Float64Array(nx * ny);
+  // row index of E_F (y-axis may ascend or descend); use fraction for interpolation
+  let efRow = 0;
+  const asc = yax[ny - 1] >= yax[0];
+  if (asc) { const d = yax[1] - yax[0] || 1; efRow = (ef - yax[0]) / d; }
+  else { const d = yax[0] - yax[1] || 1; efRow = (yax[0] - ef) / d; }
+  for (let j = 0; j < ny; j++) {
+    const jm = 2 * efRow - j;                 // mirrored row about E_F
+    const off = j * nx;
+    if (jm < 0 || jm > ny - 1) { for (let i = 0; i < nx; i++) out[off + i] = A[off + i]; continue; }
+    const jl = Math.floor(jm), jh = Math.min(ny - 1, jl + 1), fr = jm - jl;
+    for (let i = 0; i < nx; i++) {
+      const v0 = A[jl * nx + i] * (1 - fr) + A[jh * nx + i] * fr;
+      out[off + i] = 0.5 * (A[off + i] + v0);
+    }
+  }
+  return out;
+}
+function anaCompute(vals, nx, ny, xax, yax, mode, sigma, w2d, opts) {
+  const A = new Float64Array(nx * ny);
+  for (let p = 0; p < A.length; p++) { const v = vals[p]; A[p] = Number.isFinite(v) ? v : 0; }
+  let xU = xax, yU = yax, AU = A;
+  if (mode !== 'raw') {
+    if (!anaAxisUniform(xU)) { const R = anaResampleColumns(AU, nx, ny, xU); AU = R.vals; xU = R.ax; }
+    if (!anaAxisUniform(yU)) { const R = anaResampleRows(AU, nx, ny, yU); AU = R.vals; yU = R.ay; }
+  }
+  const dk = xU.length > 1 ? (xU[nx - 1] - xU[0]) / (nx - 1) : 1;
+  const dw = yU.length > 1 ? (yU[ny - 1] - yU[0]) / (ny - 1) : 1;
+  if (mode === 'sym') { // Fermi symmetrization (needs ef in opts)
+    const ef = (opts && typeof opts.ef === 'number') ? opts.ef : ((yU[0] + yU[ny - 1]) / 2);
+    return { vals: anaSymmetrize(AU, nx, ny, yU, ef), xax: xU, yax: yU };
+  }
+  if (mode === 'raw') return { vals: AU, xax: xU, yax: yU };
+  const K = anaKernels(sigma);
+  if (mode === 'd2k') return { vals: anaConvRows(AU, nx, ny, K.dd, 1 / (dk * dk)), xax: xU, yax: yU };
+  if (mode === 'd2w') return { vals: anaConvCols(AU, nx, ny, K.dd, 1 / (dw * dw)), xax: xU, yax: yU };
+  if (mode === 'grad') {
+    const gx = anaConvRows(AU, nx, ny, K.d, 1 / dk), gy = anaConvCols(AU, nx, ny, K.d, 1 / dw);
+    const out = new Float64Array(nx * ny);
+    for (let p = 0; p < out.length; p++) out[p] = Math.hypot(gx[p], gy[p]);
+    return { vals: out, xax: xU, yax: yU };
+  }
+  if (mode === 'curv_k') {
+    const Ik = anaConvRows(AU, nx, ny, K.d, 1 / dk), Ikk = anaConvRows(AU, nx, ny, K.dd, 1 / (dk * dk));
+    const out = new Float64Array(nx * ny);
+    for (let p = 0; p < out.length; p++) { const g = Ik[p]; out[p] = -Ikk[p] / Math.pow(1 + g * g, 1.5); }
+    return { vals: out, xax: xU, yax: yU };
+  }
+  if (mode === 'curv_w') {
+    const Iw = anaConvCols(AU, nx, ny, K.d, 1 / dw), Iww = anaConvCols(AU, nx, ny, K.dd, 1 / (dw * dw));
+    const out = new Float64Array(nx * ny);
+    for (let p = 0; p < out.length; p++) { const g = Iw[p]; out[p] = -Iww[p] / Math.pow(1 + g * g, 1.5); }
+    return { vals: out, xax: xU, yax: yU };
+  }
+  if (mode === 'curv2d') {
+    // Zhang et al. (2011): C2D = C_EDC + w2d * C_MDC, each 1D curvature -I''/(1+I'^2)^(3/2).
+    const w = (typeof w2d === 'number' && isFinite(w2d)) ? w2d : 1;
+    const Ik = anaConvRows(AU, nx, ny, K.d, 1 / dk), Iw = anaConvCols(AU, nx, ny, K.d, 1 / dw);
+    const Ikk = anaConvRows(AU, nx, ny, K.dd, 1 / (dk * dk)), Iww = anaConvCols(AU, nx, ny, K.dd, 1 / (dw * dw));
+    const out = new Float64Array(nx * ny);
+    for (let p = 0; p < out.length; p++) {
+      const cw = -Iww[p] / Math.pow(1 + Iw[p] * Iw[p], 1.5);
+      const ck = -Ikk[p] / Math.pow(1 + Ik[p] * Ik[p], 1.5);
+      out[p] = cw + w * ck;
+    }
+    return { vals: out, xax: xU, yax: yU };
+  }
+  throw new Error("Unknown analysis mode: " + mode);
+}
+function anaRobustScale(C) { // p99.9 of |C|: a Fermi-edge outlier cannot dictate thresholds
+  const n = C.length, step = Math.max(1, Math.floor(n / 20000));
+  const s = [];
+  for (let p = 0; p < n; p += step) s.push(Math.abs(C[p]));
+  if (!s.length) return 0;
+  s.sort(function (a, b) { return a - b; });
+  const v = s[Math.floor(0.999 * (s.length - 1))];
+  return v > 0 ? v : 0;
+}
+function anaPercentileRange(vals) {
+  // Sampled p0.5/p99.5 range: used to set the initial colour window of analysis
+  // images so a few extreme pixels (sharp edges, Fermi steps) cannot saturate
+  // the whole display. Raw files keep the full min/max behaviour.
+  const n = vals.length, step = Math.max(1, Math.floor(n / 20000));
+  const s = [];
+  for (let p = 0; p < n; p += step) { const v = vals[p]; if (isFinite(v)) s.push(v); }
+  if (s.length < 10) return null;
+  s.sort(function (a, b) { return a - b; });
+  var lo = s[Math.floor(0.005 * (s.length - 1))];
+  var hi = s[Math.floor(0.995 * (s.length - 1))];
+  if (!(hi > lo)) { hi = s[s.length - 1]; lo = s[0]; }
+  return { min: lo, max: hi };
+}
+function anaDpRidges(C, nx, ny, orient, sens, sigma, maxPaths, polarity) {
+  // Continuity-constrained multi-path DP over per-line crest candidates.
+  // polarity: 'abs' tracks |curvature| (troughs and crests alike); 'pos'/'neg' track the
+  // signed curvature of one sign only, so a band centre (crest) can be preferred over a dip.
+  const pol = (polarity === 'pos' || polarity === 'neg') ? polarity : 'abs';
+  const polar = (pol === 'neg') ? -1 : 1;
+  const scale = Math.max(anaRobustScale(C), 1e-300);
+  const m0 = (sigma <= 0 ? 2 : Math.max(1, Math.ceil(3.5 * sigma))) + 2;
+  const nScan = (orient === 'row') ? ny : nx;
+  const nPos = (orient === 'row') ? nx : ny;
+  const margin = Math.min(m0, Math.max(0, Math.floor((nPos - 3) / 2)));
+  if (nPos <= 2 * margin + 3 || nScan < 4) return { results: [], scale: scale };
+  const at = function (s, p) { const c = (orient === 'row') ? C[s * nx + p] : C[p * nx + s]; return (pol === 'abs') ? Math.abs(c) : polar * c; };
+  const thr = sens * scale;
+  const LAM = 1 / 100;
+  const MAXP = maxPaths || 6, EXCL = 6, MIN_LEN = 12, MAX_JUMP = 10;
+  const cands = [];
+  for (let s = 0; s < nScan; s++) {
+    const line = [];
+    for (let p = margin + 1; p < nPos - margin - 1; p++) {
+      const v = at(s, p);
+      if (v < thr) continue;
+      if (v >= at(s, p - 1) && v >= at(s, p + 1)) line.push(p);
+    }
+    if (line.length > 6) {
+      const sRef = s;
+      line.sort(function (a, b) { return at(sRef, b) - at(sRef, a); });
+      line.length = 6;
+      line.sort(function (a, b) { return a - b; });
+    }
+    cands.push(line);
+  }
+  const used = new Uint8Array(nScan * nPos);
+  const results = [];
+  for (let path = 0; path < MAXP; path++) {
+    const dpVal = new Float64Array(nScan), dpPos = new Int32Array(nScan);
+    let anyCand = false;
+    for (let s = 0; s < nScan; s++) {
+      let bv = (s > 0) ? dpVal[s - 1] : 0, bp = -1;
+      const cl = cands[s];
+      for (let ci = 0; ci < cl.length; ci++) {
+        const p = cl[ci];
+        if (used[s * nPos + p]) continue;
+        anyCand = true;
+        const gain = at(s, p) / scale;
+        let cur;
+        if (s === 0) cur = gain;
+        else {
+          const pp = dpPos[s - 1];
+          cur = (pp < 0) ? gain : dpVal[s - 1] + gain - LAM * (p - pp) * (p - pp);
+        }
+        if (cur > bv) { bv = cur; bp = p; }
+      }
+      dpVal[s] = bv; dpPos[s] = bp;
+    }
+    if (!anyCand) break;
+    let bestEnd = -1, bestV = -Infinity;
+    for (let s = 0; s < nScan; s++) if (dpVal[s] > bestV) { bestV = dpVal[s]; bestEnd = s; }
+    if (bestEnd < 0) break;
+    const raw = [];
+    for (let s = bestEnd; s >= 0; s--) { const p = dpPos[s]; if (p >= 0) raw.push([s, p]); }
+    raw.reverse();
+    if (raw.length < MIN_LEN) break;
+    const pts = [];
+    let prevP = null;
+    for (let q = 0; q < raw.length; q++) {
+      const s = raw[q][0], p = raw[q][1];
+      const v = at(s, p);
+      if (v < 0.5 * thr) { prevP = null; continue; }
+      if (prevP !== null && Math.abs(p - prevP) > MAX_JUMP) {
+        if (pts.length >= MIN_LEN) results.push(pts.slice());
+        pts.length = 0;
+      }
+      let fp = p;
+      if (p > margin && p < nPos - 1 - margin) {
+        const ym = at(s, p - 1), yc = at(s, p), yp = at(s, p + 1);
+        const den = ym - 2 * yc + yp;
+        if (Math.abs(den) > 1e-300) fp = p + Math.max(-1, Math.min(1, 0.5 * (ym - yp) / den));
+      }
+      pts.push([s, fp, v]);
+      prevP = p;
+    }
+    if (pts.length >= MIN_LEN) results.push(pts.slice());
+    if (!results.length) break;
+    for (let g2 = 0; g2 < results.length; g2++) {
+      const seg = results[g2];
+      for (let qi = 0; qi < seg.length; qi++) {
+        const s0 = seg[qi][0], p0 = Math.floor(seg[qi][1]);
+        const lo2 = Math.max(0, p0 - EXCL), hi2 = Math.min(nPos - 1, p0 + EXCL);
+        for (let q2 = lo2; q2 <= hi2; q2++) used[s0 * nPos + q2] = 1;
+      }
+    }
+  }
+  return { results: results, scale: scale };
+}
+function anaRidgeSegments(C, nx, ny, orient, sens, sigma, polarity) {
+  const R = anaDpRidges(C, nx, ny, orient, sens, sigma, 6, polarity);
+  const segs = R.results;
+  if (!segs.length) return new Float64Array([0]);
+  let total = 1;
+  for (let g = 0; g < segs.length; g++) total += 1 + segs[g].length * 3;
+  const out = new Float64Array(total);
+  out[0] = segs.length;
+  let w = 1;
+  for (let g = 0; g < segs.length; g++) {
+    const sgm = segs[g];
+    out[w++] = sgm.length;
+    for (let q = 0; q < sgm.length; q++) { out[w++] = sgm[q][0]; out[w++] = sgm[q][1]; out[w++] = sgm[q][2]; }
+  }
+  return out;
+}
+function anaAutoOrient(mode) { return (mode === 'curv_w' || mode === 'd2w') ? 'col' : 'row'; }
+// ===== ARPES peak fits: simple, robust, no dependencies =====
+// EDC/MDC peak: quadratic fit around the local maximum (sub-sample position),
+// with an estimate of the FWHM from the half-max crossings. Returns null if no
+// clear peak. This is a fast "quick look" fit, not a full lineshape model.
+function anaPeakFit(profile) {
+  const n = profile.length;
+  if (n < 5) return null;
+  let imax = 0, vmax = -Infinity, vmin = Infinity, sum = 0;
+  for (let i = 0; i < n; i++) { const v = profile[i]; if (v === v) { if (v > vmax) { vmax = v; imax = i; } if (v < vmin) vmin = v; sum += v; } }
+  if (!(vmax > vmin)) return null;
+  // require a local maximum (not a plateau/edge)
+  if (imax === 0 || imax === n - 1) return null;
+  const a = profile[imax - 1], b = profile[imax], c = profile[imax + 1];
+  const den = a - 2 * b + c;
+  let pos = imax;
+  if (Math.abs(den) > 1e-300) pos = imax - 0.5 * (c - a) / den;
+  // FWHM from half-max crossings relative to a linear baseline (min + 5%)
+  const base = vmin + 0.05 * (vmax - vmin);
+  const half = base + 0.5 * (vmax - base);
+  let lo = imax, hi = imax;
+  while (lo > 0 && profile[lo] > half) lo--;
+  while (hi < n - 1 && profile[hi] > half) hi++;
+  const fwhm = Math.max(0, hi - lo);
+  return { idx: pos, value: vmax, amp: vmax - base, fwhm: fwhm, base: base };
+}
+</script>
+<script id="app-src">
+// ===== Web Worker bootstrap (off-main-thread HDF5 parsing) =====
+function makeParseWorkerURL() {
+  const src = document.getElementById('hdf5-parser-src').textContent;
+  const ana = document.getElementById('analysis-src').textContent;
+  const boot = [
+    "self.onmessage = function(ev) {",
+    "  const d = ev.data || {};",
+    "  if (d.cmd === 'analysis') {",
+    "    try {",
+    "      const R = anaCompute(d.vals, d.nx, d.ny, d.xax, d.yax, d.mode, d.sigma, d.w2d, d.opts);",
+    "      const segs = (d.wantRidge && d.mode !== 'raw') ? anaRidgeSegments(R.vals, d.nx, d.ny, d.orient, d.sens, d.sigma, d.polarity) : new Float64Array([0]);",
+    "      self.postMessage({ cmd: 'analysis', ok: true, reqId: d.reqId, vals: R.vals, xax: R.xax, yax: R.yax, segs: segs },",
+    "        [R.vals.buffer, R.xax.buffer, R.yax.buffer, segs.buffer]);",
+    "    } catch (err) { self.postMessage({ cmd: 'analysis', ok: false, reqId: d.reqId, error: (err && err.message) ? err.message : String(err) }); }",
+    "    return;",
+    "  }",
+    "  try {",
+    "    const res = new HDF5Parser(ev.data.buffer).parse();",
+    "    const cp = function(ta) { const out = new Float64Array(ta.length); for (var i = 0; i < ta.length; i++) out[i] = ta[i]; return out; };",
+    "    const r = { objectName: res.objectName,",
+    "      xaxis: { values: cp(res.xaxis.values), name: res.xaxis.name, label: res.xaxis.label, unit: res.xaxis.unit },",
+    "      yaxis: { values: cp(res.yaxis.values), name: res.yaxis.name, label: res.yaxis.label, unit: res.yaxis.unit },",
+    "      array: { values: cp(res.array.values), dims: res.array.dims, name: res.array.name, label: res.array.label, unit: res.array.unit } };",
+    "    self.postMessage({ ok: true, result: r },",
+    "      [r.xaxis.values.buffer, r.yaxis.values.buffer, r.array.values.buffer]);",
+    "  } catch (err) { self.postMessage({ ok: false, error: (err && err.message) ? err.message : String(err) }); }",
+    "};"
+  ].join("\n");
+  return URL.createObjectURL(new Blob([src, "\n", ana, "\n", boot], { type: "application/javascript" }));
+}
+let workerParseHandler = null, workerAnalysisHandler = null; // one dispatcher, two consumers
+function routeWorkerMsg(ev) {
+  // Handlers stay installed until THEY consume their matching reply. A stale
+  // reply (older reqId) is ignored, leaving the current request's handler in
+  // place, so a stale analysis reply cannot orphan the live request.
+  const d = ev.data;
+  if (d && d.cmd === 'analysis') { if (workerAnalysisHandler) workerAnalysisHandler(d); return; }
+  if (workerParseHandler) workerParseHandler(d);
+}
+let parseWorker = null, workerURL = null; // parseWorker null = uninitialised, false = unavailable
+function getParseWorker() {
+  if (parseWorker !== null) return parseWorker;
+  try {
+    workerURL = makeParseWorkerURL();
+    parseWorker = new Worker(workerURL);
+    parseWorker.onmessage = routeWorkerMsg;
+  } catch (e) { parseWorker = false; }
+  return parseWorker;
+}
+function parseInWorker(buffer) {
+  const w = getParseWorker();
+  if (!w) return Promise.resolve().then(function() { return new HDF5Parser(buffer).parse(); }); // graceful fallback
+  return new Promise(function(resolve, reject) {
+    workerParseHandler = function(d) {
+      workerParseHandler = null;
+      if (workerURL) { try { URL.revokeObjectURL(workerURL); workerURL = null; } catch (e) {} }
+      if (d && d.ok) resolve(d.result);
+      else reject(new Error(d && d.error ? d.error : "parse failed"));
+    };
+    w.onerror = function(e) { if (workerParseHandler) workerParseHandler = null; reject(new Error(e.message || "Worker error")); };
+    w.postMessage({ buffer: buffer }, [buffer]); // transfer: no copy of the file bytes
+  });
+}
+
+// ===== Theme =====
+let isDarkMode = false;
+function getTheme() { return isDarkMode ? 'dark' : 'light'; }
+function toggleTheme() {
+  isDarkMode = !isDarkMode;
+  document.body.classList.toggle('dark-mode', isDarkMode);
+  document.getElementById('themeBtn').textContent = isDarkMode ? '☀️' : '🌙';
+  try { localStorage.setItem('hdf5_theme', isDarkMode ? 'dark' : 'light'); } catch(e) {}
+  schedule({ heat: true, profiles: true, colorbar: true, cross: (crossPx ? lastHoverPt : null) });
+}
+function initTheme() {
+  try { const t = localStorage.getItem('hdf5_theme'); if (t === 'dark') { isDarkMode = true; document.body.classList.add('dark-mode'); document.getElementById('themeBtn').textContent = '☀️'; } } catch(e) {}
+}
+
+// ===== State & DOM (queried once) =====
+let currentData = null, currentColormap = 'inferno', invertColormap = false;
+let view = null, colorScale = null, dataMin = 0, dataMax = 1;
+let isPanning = false, panLastX = 0, panLastY = 0;
+let cbDragging = null, cbHandlePos = { minX: 0, maxX: 0 };
+const cbLayout = { padL: 45, padR: 15, barY: 8, barH: 16, h: 95 };
+let touchMode = null, touchLastX = 0, touchLastY = 0, lastPinchDist = 0;
+let dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+
+const canvas = document.getElementById('heatmapCanvas');
+const ctx = canvas.getContext('2d');
+const ovl = document.getElementById('overlayCanvas');
+const octx = (function () { try { return ovl.getContext('2d', { desynchronized: true }); } catch (err) { return ovl.getContext('2d'); } })();
+const hPC = document.getElementById('hProfileCanvas'), hCtx = hPC.getContext('2d');
+const vPC = document.getElementById('vProfileCanvas'), vCtx = vPC.getContext('2d');
+const cbC = document.getElementById('colorbar'), cbCtx = cbC.getContext('2d');
+const heatBuf = document.createElement('canvas'), heatBufCtx = heatBuf.getContext('2d');
+const cursorTextEl = document.getElementById('cursorText');
+const fileInfoEl = document.getElementById('fileInfo');
+const statusEl = document.getElementById('status');
+const zminEl = document.getElementById('zminInput'), zmaxEl = document.getElementById('zmaxInput');
+const plotAreaEl = document.getElementById('plotArea');
+let plotGeo = null;
+
+// Cached element rects: avoids getBoundingClientRect() (forced layout) per mousemove
+let canvasRect = null, cbRect = null;
+function refreshRects() {
+  try { canvasRect = canvas.getBoundingClientRect(); cbRect = cbC.getBoundingClientRect(); }
+  catch (e) { canvasRect = null; cbRect = null; }
+}
+
+const margin = { top: 15, right: 20, bottom: 60, left: 70 };
+
+const colormaps = {
+  viridis: [[68,1,84],[71,19,101],[72,38,119],[69,55,129],[62,74,137],[55,95,142],[49,114,145],[43,133,140],[38,152,131],[33,170,122],[31,187,113],[42,194,108],[62,198,99],[84,201,92],[106,204,85],[129,206,77],[152,207,70],[175,208,61],[198,207,51],[221,205,40],[243,201,29],[253,185,37],[253,157,58],[253,141,59],[251,117,49],[248,93,40],[245,70,31],[242,47,21],[239,24,12],[229,0,0]],
+  plasma: [[13,8,135],[34,13,168],[58,11,191],[81,10,203],[105,9,214],[129,10,221],[152,15,226],[176,24,227],[199,37,226],[221,54,219],[240,77,204],[252,105,184],[255,137,161],[253,170,131],[247,203,101],[239,237,72],[221,250,51],[192,253,43],[162,253,42],[131,252,47]],
+  inferno: [[0,0,4],[11,1,26],[22,3,64],[34,5,101],[46,8,139],[59,13,177],[72,19,210],[86,28,234],[101,41,249],[117,57,255],[134,77,255],[152,97,251],[170,120,243],[188,143,230],[206,168,211],[222,192,190],[236,214,170],[246,233,153],[253,248,143],[255,255,179]],
+  grayscale: [[255,255,255],[240,240,240],[220,220,220],[200,200,200],[170,170,170],[140,140,140],[100,100,100],[60,60,60],[0,0,0]],
+  diverging: [[0,0,102],[50,50,153],[102,102,204],[178,178,229],[255,255,255],[229,178,178],[204,102,102],[153,50,50],[102,0,0]]
+};
+
+// ===== Colormap LUT: 256-entry table packed as ABGR u32 for 32-bit writes =====
+const NAN_COLOR = (255 << 24) | (97 << 16) | (97 << 8) | 26; // distinct dark blue-grey for NaN
+let cbarVersion = 0, cbarStrip = null, cbarStripKey = null;
+let lut = new Uint32Array(256);
+function buildLUT() {
+  const c = colormaps[currentColormap];
+  for (let i = 0; i < 256; i++) {
+    let t = i / 255;
+    if (invertColormap) t = 1 - t;
+    const pos = t * (c.length - 1);
+    const idx = Math.floor(pos), f = pos - idx;
+    const a = c[idx], b = c[Math.min(idx + 1, c.length - 1)];
+    const r = Math.round(a[0] + (b[0] - a[0]) * f);
+    const g = Math.round(a[1] + (b[1] - a[1]) * f);
+    const bl = Math.round(a[2] + (b[2] - a[2]) * f);
+    lut[i] = (255 << 24) | (bl << 16) | (g << 8) | r;
+  }
+  cbarVersion++;
+}
+function fmt(v) { if (Math.abs(v) < 1e-4 && v !== 0) return v.toExponential(1); return parseFloat(v.toFixed(3)).toString(); }
+function niceTicks(min, max, count) {
+  // Float-safe tick generator. The original accumulated `v += step`, which
+  // loops FOREVER (hard page freeze) when step is smaller than 1 ULP at the
+  // axis magnitude - e.g. epoch-second timestamps with a microsecond window,
+  // or subnormal axes where step underflows to 0. This version always floors
+  // the step at 4 ULP, walks by INDEX (no accumulation), and caps output at
+  // 401 ticks, so it is structurally incapable of hanging.
+  if (!isFinite(min) || !isFinite(max)) return [];
+  const lo0 = Math.min(min, max), hi0 = Math.max(min, max);
+  const range = max - min;
+  if (!isFinite(range)) return [lo0, hi0];
+  if (!(range > 0)) return [min];
+  const rough = range / count;
+  if (!(rough > 0)) return [lo0, hi0];
+  const lg = Math.log10(rough);
+  if (!isFinite(lg)) return [lo0, hi0];
+  const exp = Math.floor(lg);
+  const pow10 = (exp >= -323 && exp <= 308) ? Math.pow(10, exp) : 0;
+  let frac = pow10 > 0 ? rough / pow10 : 0;
+  if (!isFinite(frac) || frac < 1 || frac > 10) frac = 5;
+  const nf = frac < 1.5 ? 1 : (frac < 3 ? 2 : (frac < 7 ? 5 : 10));
+  let step = nf * pow10;
+  const mag = min !== 0 ? Math.abs(min) : Math.abs(range);
+  const ulpExp = Math.floor(Math.log2(mag)) - 52;
+  const ulp = ulpExp >= -1074 ? Math.pow(2, ulpExp) : 0;
+  const minStep = ulp * 4;
+  if (!(step > 0) || step < minStep) step = minStep;
+  if (!(step > 0) || !isFinite(step)) return [lo0, hi0];
+  const nMin = Math.ceil(min / step) * step;
+  const nMax = Math.floor(max / step) * step;
+  if (!isFinite(nMin) || !isFinite(nMax) || nMax < nMin) return [lo0, hi0];
+  const span = (nMax - nMin) / step;
+  if (!isFinite(span) || span < 0) return [lo0, hi0];
+  let n = Math.round(span);
+  if (!isFinite(n) || n < 0) return [lo0, hi0];
+  if (n > 400) n = 400;
+  const ticks = [];
+  for (let k = 0; k <= n; k++) ticks.push(parseFloat((nMin + k * step).toPrecision(12)));
+  return ticks;
+}
+
+// ===== rAF render scheduler: one frame per batch, no matter how many events fire =====
+let rafId = 0;
+let dirtyHeat = false, dirtyRecolor = false, dirtyProfiles = false, dirtyColorbar = false, dirtyOverlay = false, dirtyCursor = false;
+let pendingCross = null;  // {fi, fj} for tick-time overlay redraws (theme change/resize), or null
+let pendingCursor = null; // {cx, cy, fi, fj} for the cursor info line
+let cursorIdx = { cx: -1, cy: -1, fi: -1, fj: -1 };
+let profileState = null;  // {key, cx, cy} of the last drawn profiles
+let crossPx = null;       // whether a crosshair is currently shown
+let lastHoverPt = null;   // {fi,fj} the crosshair was drawn for
+
+function schedule(opt) {
+  if (opt.recolor) { dirtyRecolor = true; dirtyHeat = true; }
+  if (opt.heat) dirtyHeat = true;
+  if (opt.profiles) dirtyProfiles = true;
+  if (opt.colorbar) dirtyColorbar = true;
+  if (opt.forceProfiles) { dirtyProfiles = true; profileState = null; }
+  if ('cross' in opt) { dirtyOverlay = true; pendingCross = opt.cross; }
+  if ('cursor' in opt) { dirtyCursor = true; if (opt.cursor) pendingCursor = opt.cursor; }
+  if (!rafId) rafId = requestAnimationFrame(tick);
+}
+function tick() {
+  rafId = 0;
+  if (!currentData || !plotGeo || !view) { dirtyHeat = dirtyRecolor = dirtyProfiles = dirtyColorbar = dirtyOverlay = dirtyCursor = false; pendingCross = null; pendingCursor = null; return; }
+  if (dirtyRecolor) renderHeatBuffer();
+  if (dirtyHeat) drawHeatmapWithAxes();
+  if (dirtyProfiles) drawProfilesIfNeeded(cursorIdx.cx, cursorIdx.cy, (cursorIdx.fi != null ? cursorIdx.fi : cursorIdx.cx), (cursorIdx.fj != null ? cursorIdx.fj : cursorIdx.cy));
+  if (dirtyColorbar) drawColorbar();
+  if (dirtyOverlay) { drawOverlayNow(pendingCross); pendingCross = null; }
+  if (dirtyCursor && pendingCursor) setCursorText(pendingCursor);
+  dirtyHeat = dirtyRecolor = dirtyProfiles = dirtyColorbar = dirtyOverlay = dirtyCursor = false;
+  pendingCursor = null;
+}
+
+// ===== Heat buffer recolour: reusable ImageData + U32 writes + NaN-safe LUT =====
+let heatImg = null, heatU32 = null;
+function renderHeatBuffer() {
+  if (!currentData || !heatImg) return;
+  const vals = currentData.array.values;
+  const min = colorScale.min, inv = 1 / ((colorScale.max - colorScale.min) || 1);
+  const u32 = heatU32, L = lut, NC = NAN_COLOR;
+  for (let k = 0; k < vals.length; k++) {
+    const v = vals[k];
+    if (v !== v) { u32[k] = NC; continue; } // NaN -> distinct colour, no crash
+    let t = (v - min) * inv;
+    if (t < 0) t = 0; else if (t > 1) t = 1;
+    u32[k] = L[(t * 255) | 0];
+  }
+  heatBufCtx.putImageData(heatImg, 0, 0);
+}
+
+function indexToX(i) { const { xaxis } = currentData; const nx = xaxis.values.length; const fi = Math.max(0, Math.min(nx - 1, i)); const li = Math.floor(fi), hi = Math.min(nx - 1, li + 1), f = fi - li; return xaxis.values[li] * (1 - f) + xaxis.values[hi] * f; }
+// Inverse of indexToX for a possibly NON-UNIFORM axis: given an axis value, return the
+// fractional index where that value occurs (linear search + interpolation). This lets ticks be
+// placed at their true position instead of assuming a uniform (linear) axis.
+function valueToIndexX(v) { const a = currentData.xaxis.values; const n = a.length;
+  if (n < 2) return 0;
+  const asc = a[n-1] >= a[0];
+  for (let i = 0; i < n-1; i++) {
+    const a0 = a[i], a1 = a[i+1];
+    if ((asc && v >= a0 && v <= a1) || (!asc && v <= a0 && v >= a1)) {
+      const d = a1 - a0; return d === 0 ? i : i + (v - a0) / d;
+    }
+  }
+  return v <= Math.min(a[0], a[n-1]) ? 0 : (n - 1);
+}
+function valueToIndexY(v) { const a = currentData.yaxis.values; const n = a.length;
+  if (n < 2) return 0;
+  const asc = a[n-1] >= a[0];
+  for (let i = 0; i < n-1; i++) {
+    const a0 = a[i], a1 = a[i+1];
+    if ((asc && v >= a0 && v <= a1) || (!asc && v <= a0 && v >= a1)) {
+      const d = a1 - a0; return d === 0 ? i : i + (v - a0) / d;
+    }
+  }
+  return v <= Math.min(a[0], a[n-1]) ? 0 : (n - 1);
+}
+function indexToY(j) { const { yaxis } = currentData; const ny = yaxis.values.length; const fj = Math.max(0, Math.min(ny - 1, j)); const lj = Math.floor(fj), hj = Math.min(ny - 1, lj + 1), f = fj - lj; return yaxis.values[lj] * (1 - f) + yaxis.values[hj] * f; }
+// The parser flips the image rows, so a DISPLAYED array row j corresponds to physical data
+// row (ny-1-j). rowToEnergy maps a displayed array row index to its physical y-axis value.
+function rowToEnergy(j) { const ny = currentData.array.dims[0]; return indexToY(ny - 1 - j); }
+
+function drawHeatmapWithAxes() {
+  if (!currentData || !plotGeo || !view) return;
+  const theme = getTheme();
+  const axisCol = theme==='dark' ? '#c9d1d9' : '#333333';
+  const bgCol = theme==='dark' ? '#0d1117' : '#ffffff';
+  const { ox, oy, dw, dh } = plotGeo;
+  const { i0, i1, j0, j1 } = view;
+  const cw = canvas.width / dpr, ch = canvas.height / dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = bgCol; ctx.fillRect(0, 0, cw, ch);
+  const sw = i1 - i0 + 1, sh = j1 - j0 + 1;
+  // nearest-neighbour when magnifying; hardware averaging only when minifying heavily
+  ctx.imageSmoothingEnabled = dw / sw < 0.5 || dh / sh < 0.5;
+  ctx.drawImage(heatBuf, i0, j0, sw, sh, ox, oy, dw, dh);
+  ctx.imageSmoothingEnabled = false;
+  ctx.strokeStyle = axisCol; ctx.lineWidth = 1; ctx.strokeRect(ox + 0.5, oy + 0.5, dw, dh);
+  const xMin = indexToX(i0), xMax = indexToX(i1), yMin = rowToEnergy(j0), yMax = rowToEnergy(j1);
+  // rowToEnergy(j0) is the largest energy (parser flips rows), so order the y-range ascending
+  // before handing it to niceTicks (which expects min < max).
+  const yLo = Math.min(yMin, yMax), yHi = Math.max(yMin, yMax);
+  const xT = niceTicks(xMin, xMax, 8), yT = niceTicks(yLo, yHi, 8);
+  const nx = currentData.array.dims[1], ny = currentData.array.dims[0];
+  ctx.fillStyle = axisCol; ctx.strokeStyle = axisCol; ctx.lineWidth = 1; ctx.font = '12px Arial';
+  const tickLen = 5;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+  for (const tv of xT) {
+    const fi = valueToIndexX(tv); // non-uniform axis: true index of value tv
+    const px = ox + ((fi - i0) / (i1 - i0)) * dw;
+    if (px < ox - 1 || px > ox + dw + 1) continue;
+    ctx.beginPath(); ctx.moveTo(px, oy + dh); ctx.lineTo(px, oy + dh - tickLen); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(px, oy); ctx.lineTo(px, oy + tickLen); ctx.stroke();
+    ctx.fillText(fmt(tv), px, oy + dh + 8);
+  }
+  ctx.font = '14px Arial';
+  ctx.fillText((currentData.xaxis.label||'X') + (currentData.xaxis.unit ? ` (${currentData.xaxis.unit})` : ''), ox + dw/2, oy + dh + 35);
+  ctx.font = '12px Arial'; ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+  for (const tv of yT) {
+    // The parser flips the image rows, so the array row showing energy tv is (ny-1) minus the
+    // y-axis index. Use the same top-origin mapping as the image/crosshair so ticks stay aligned
+    // with the displayed data at every zoom/pan window (previously this used a bottom-origin
+    // formula, which matched only at full view and drifted when zoomed).
+    const fj = (ny - 1) - valueToIndexY(tv); // true (possibly non-uniform) axis index, mirrored for the row-flip
+    const py = oy + ((fj - j0) / (j1 - j0)) * dh;
+    if (py < oy - 1 || py > oy + dh + 1) continue;
+    ctx.beginPath(); ctx.moveTo(ox, py); ctx.lineTo(ox + tickLen, py); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(ox + dw, py); ctx.lineTo(ox + dw - tickLen, py); ctx.stroke();
+    ctx.fillText(fmt(tv), ox - 8, py);
+  }
+  ctx.save(); ctx.translate(20, oy + dh/2); ctx.rotate(-Math.PI/2);
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.font = '14px Arial'; ctx.fillStyle = axisCol;
+  ctx.fillText((currentData.yaxis.label||'Y') + (currentData.yaxis.unit ? ` (${currentData.yaxis.unit})` : ''), 0, 0);
+  ctx.restore();
+}
+
+// ===== Overlay crosshair =====
+// The crosshair is POINTER-CRITICAL UI: on mousemove/wheel it is drawn
+// synchronously inside the event handler itself (clear + 2 lines < 0.1 ms), so
+// it can NEVER be delayed or starved by the batched heavy work that runs at
+// most once per rAF frame.
+function drawCrosshairLines(fi, fj) {
+  const theme = getTheme();
+  const { ox, oy, dw, dh } = plotGeo;
+  const px = ox + ((fi - view.i0) / (view.i1 - view.i0)) * dw;
+  const py = oy + ((fj - view.j0) / (view.j1 - view.j0)) * dh;
+  octx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  octx.strokeStyle = theme==='dark' ? 'rgba(255,255,255,0.4)' : 'rgba(0,0,0,0.4)';
+  octx.lineWidth = 1;
+  octx.beginPath(); octx.moveTo(px, oy); octx.lineTo(px, oy + dh); octx.moveTo(ox, py); octx.lineTo(ox + dw, py); octx.stroke();
+}
+// c: {fi, fj} to draw, or null to clear.
+function drawOverlayNow(c) {
+  if (!plotGeo || !view) return;
+  octx.setTransform(1, 0, 0, 1, 0, 0);
+  octx.clearRect(0, 0, ovl.width, ovl.height);
+  drawRidgeOverlay(); // dispersion segments (kept across crosshair updates & zoom)
+  if (c) { drawCrosshairLines(c.fi, c.fj); lastHoverPt = { fi: c.fi, fj: c.fj }; crossPx = 1; }
+  else { crossPx = null; lastHoverPt = null; }
+}
+
+function drawColorbar() {
+  const theme = getTheme();
+  const axisCol = theme==='dark' ? '#c9d1d9' : '#333333';
+  const bgCol = theme==='dark' ? '#0d1117' : '#ffffff';
+  const W = cbC.clientWidth || 300;
+  const H = cbLayout.h;
+  const bw = Math.max(1, Math.round(W * dpr)), bh = Math.max(1, Math.round(H * dpr));
+  if (cbC.width !== bw || cbC.height !== bh) { cbC.width = bw; cbC.height = bh; }
+  const barW = W - cbLayout.padL - cbLayout.padR;
+  const barX = cbLayout.padL, barY = cbLayout.barY, barH = cbLayout.barH;
+  // cached gradient strip at device resolution; rebuilt only when size/colormap/dpr changes
+  const key = cbarVersion + '|' + barW + '|' + barH + '|' + dpr;
+  if (cbarStripKey !== key) {
+    const barWdev = Math.max(1, Math.round(barW * dpr)), barHdev = Math.max(1, Math.round(barH * dpr));
+    const img = new ImageData(barWdev, barHdev);
+    const u32 = new Uint32Array(img.data.buffer);
+    for (let x = 0; x < barWdev; x++) {
+      const col = lut[Math.round((x / (barWdev - 1)) * 255)];
+      for (let y = 0; y < barHdev; y++) u32[y * barWdev + x] = col;
+    }
+    cbarStrip = img; cbarStripKey = key;
+  }
+  cbCtx.setTransform(1, 0, 0, 1, 0, 0);
+  cbCtx.fillStyle = bgCol; cbCtx.fillRect(0, 0, cbC.width, cbC.height);
+  cbCtx.putImageData(cbarStrip, Math.round(barX * dpr), Math.round(barY * dpr));
+  cbCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const range = dataMax - dataMin || 1;
+  const minFrac = (colorScale.min - dataMin) / range;
+  const maxFrac = (colorScale.max - dataMin) / range;
+  const minPx = barX + minFrac * barW;
+  const maxPx = barX + maxFrac * barW;
+  cbHandlePos = { minX: minPx, maxX: maxPx };
+  const minHandleCol = theme==='dark' ? '#3fb950' : '#009944';
+  const maxHandleCol = theme==='dark' ? '#f85149' : '#cc1166';
+  function drawHandle(px, color) {
+    cbCtx.strokeStyle = color; cbCtx.fillStyle = color; cbCtx.lineWidth = 2;
+    cbCtx.beginPath(); cbCtx.moveTo(px, barY - 2); cbCtx.lineTo(px, barY + barH + 2); cbCtx.stroke();
+    cbCtx.beginPath(); cbCtx.moveTo(px - 5, 0); cbCtx.lineTo(px + 5, 0); cbCtx.lineTo(px, 5); cbCtx.closePath(); cbCtx.fill();
+    cbCtx.beginPath(); cbCtx.moveTo(px - 5, barY + barH + 5); cbCtx.lineTo(px + 5, barY + barH + 5); cbCtx.lineTo(px, barY + barH); cbCtx.closePath(); cbCtx.fill();
+  }
+  drawHandle(minPx, minHandleCol);
+  drawHandle(maxPx, maxHandleCol);
+  cbCtx.strokeStyle = axisCol; cbCtx.lineWidth = 1;
+  const ticks = niceTicks(colorScale.min, colorScale.max, 5);
+  cbCtx.fillStyle = axisCol;
+  cbCtx.font = '11px Arial'; cbCtx.textAlign = 'center'; cbCtx.textBaseline = 'top';
+  for (const tv of ticks) {
+    const frac = (tv - colorScale.min) / (colorScale.max - colorScale.min || 1);
+    const px = barX + frac * barW;
+    if (px < barX - 1 || px > barX + barW + 1) continue;
+    cbCtx.beginPath(); cbCtx.moveTo(px, barY + barH + 8); cbCtx.lineTo(px, barY + barH + 12); cbCtx.stroke();
+    cbCtx.fillText(fmt(tv), px, barY + barH + 16);
+  }
+  cbCtx.font = '11px Arial';
+  cbCtx.textAlign = 'left'; cbCtx.fillStyle = minHandleCol;
+  cbCtx.fillText(`min: ${colorScale.min.toExponential(3)}`, 2, H - 14);
+  cbCtx.textAlign = 'right'; cbCtx.fillStyle = maxHandleCol;
+  cbCtx.fillText(`max: ${colorScale.max.toExponential(3)}`, W - 2, H - 14);
+}
+
+// ===== Profiles: zero-copy row view, reused column scratch, cached plots =====
+let colScratch = null, profileBuckets = null;
+function drawProfilesIfNeeded(cx, cy, fi, fj) {
+  if (!currentData || !view) return;
+  const ny = currentData.array.dims[0], nx = currentData.array.dims[1];
+  if (cx < 0 || cx >= nx || cy < 0 || cy >= ny) return;
+  // Include the fractional cursor position in the cache key so the profile slice label/marker
+  // track the exact crosshair location, not just the integer cell.
+  const key = view.i0 + '|' + view.i1 + '|' + view.j0 + '|' + view.j1 + '|' + (crossPx ? 1 : 0) + '|' + fi.toFixed(4) + '|' + fj.toFixed(4);
+  if (profileState && profileState.key === key && profileState.cx === cx && profileState.cy === cy) return;
+  profileState = { key: key, cx: cx, cy: cy };
+  drawProfiles(cx, cy, fi, fj);
+}
+function drawProfiles(xi, yi, fi, fj) {
+  if (!currentData || !view) return;
+  const { xaxis, yaxis, array } = currentData;
+  const ny = array.dims[0], nx = array.dims[1];
+  const ci = Math.max(0, Math.min(nx - 1, xi)), cj = Math.max(0, Math.min(ny - 1, yi));
+  // Fractional cursor position for the slice LABELS/MARKERS (so they match the crosshair), while
+  // the integer cell (ci/cj) selects which row/column of data to plot.
+  const fXi = (typeof fi === 'number' && isFinite(fi)) ? Math.max(0, Math.min(nx - 1, fi)) : ci;
+  const fYj = (typeof fj === 'number' && isFinite(fj)) ? Math.max(0, Math.min(ny - 1, fj)) : cj;
+  const vals = array.values;
+  const xRow = vals.subarray(cj * nx, cj * nx + nx); // zero-copy row (was Array.from per mousemove)
+  if (!colScratch || colScratch.length !== ny) colScratch = new Float64Array(ny); // reused column buffer
+  // read the column in reversed row order so the profile's peak falls on the same side
+  // as the bright band in the (flipped) image. Labels remain ascending (-6..+6 left->right).
+  for (let i = 0; i < ny; i++) colScratch[i] = vals[(ny - 1 - i) * nx + ci];
+  const xMinView = indexToX(view.i0), xMaxView = indexToX(view.i1);
+  drawProfile(hCtx, hPC, xaxis.values, xRow, xaxis.label || 'X', xaxis.unit || '', array.label || 'Z', array.unit || '', cj, rowToEnergy(fYj), yaxis.label || 'Y', xMinView, xMaxView, false, indexToX(fXi), crossPx);
+  // Because element i of colScratch holds buffer row (ny-1-i), the visible row window view.j0..j1
+  // must be mirrored into profile index space for zoom/pan to follow the image (not act flipped).
+  const yMinView = rowToEnergy(view.j1), yMaxView = rowToEnergy(view.j0);
+  const yvLo = Math.min(yMinView, yMaxView), yvHi = Math.max(yMinView, yMaxView);
+  drawProfile(vCtx, vPC, yaxis.values, colScratch, yaxis.label || 'Y', yaxis.unit || '', array.label || 'Z', array.unit || '', ci, indexToX(fXi), xaxis.label || 'X', yvLo, yvHi, false, rowToEnergy(fYj), crossPx);
+}
+
+function drawProfile(pctx, pcanvas, xAxis, yData, xLabel, xUnit, zLabel, zUnit, sliceIdx, sliceVal, sliceAxisLabel, viewMin, viewMax, flipX, markerVal, showMarker) {
+  const theme = getTheme();
+  const axisCol = theme==='dark' ? '#c9d1d9' : '#333333';
+  const bgCol = theme==='dark' ? '#0d1117' : '#ffffff';
+  const gridCol = theme==='dark' ? '#21262d' : '#e0e0e0';
+  const lineCol = theme==='dark' ? '#58a6ff' : '#000000';
+  const sliceCol = theme==='dark' ? '#ff6b6b' : '#d62728';
+  const w = pcanvas.clientWidth || 1, h = pcanvas.clientHeight || 1;
+  const bw = Math.max(1, Math.round(w * dpr)), bh = Math.max(1, Math.round(h * dpr));
+  if (pcanvas.width !== bw || pcanvas.height !== bh) { pcanvas.width = bw; pcanvas.height = bh; }
+  pctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  pctx.fillStyle = bgCol; pctx.fillRect(0, 0, w, h);
+  const n = yData.length;
+  if (!n) return;
+  const pm = { top: 25, right: 15, bottom: 55, left: 60 };
+  const pw = w - pm.left - pm.right, ph = h - pm.top - pm.bottom;
+  if (pw < 10 || ph < 10) return;
+  const xMin = viewMin !== undefined ? viewMin : xAxis[0];
+  const xMax = viewMax !== undefined ? viewMax : xAxis[n - 1];
+  const xRange = (xMax - xMin) || 1;
+  // Horizontal value->pixel mapping. flipX mirrors left<->right so the Y-profile can follow
+  // the image's vertical axis (image top at profile-left) while the ticks stay readable.
+  const xToPx = (v) => { const t = (v - xMin) / xRange; return pm.left + (flipX ? (1 - t) : t) * pw; };
+
+  // min/max decimation: one bucket per pixel column (O(n) once per redraw, ~2*plotWidth segments drawn)
+  const nb = Math.min(16384, Math.max(2, Math.ceil(pw) + 1));
+  if (!profileBuckets || profileBuckets.bX.length !== nb) profileBuckets = { bX: new Float64Array(nb), bMin: new Float64Array(nb), bMax: new Float64Array(nb) };
+  const bX = profileBuckets.bX, bMin = profileBuckets.bMin, bMax = profileBuckets.bMax;
+  bX.fill(0);
+  const direct = n <= nb * 2; // few points -> draw exact polyline
+  const x0 = pm.left, x1 = pm.left + pw;
+  let lo = Infinity, hi = -Infinity;
+  for (let i = 0; i < n; i++) {
+    const xv = xAxis[i];
+    if (xv < xMin || xv > xMax) continue;
+    const px = x0 + (flipX ? (1 - (xv - xMin) / xRange) : (xv - xMin) / xRange) * pw;
+    const v = yData[i];
+    if (v !== v || v === Infinity || v === -Infinity) continue; // NaN/Inf skipped, not poisoning the axis
+    if (v < lo) lo = v;
+    if (v > hi) hi = v;
+    if (direct) continue;
+    const b = (px - x0) | 0;
+    if (b < 0 || b >= nb) continue;
+    if (!bX[b]) { bX[b] = px; bMin[b] = v; bMax[b] = v; }
+    else { if (v < bMin[b]) bMin[b] = v; if (v > bMax[b]) bMax[b] = v; }
+  }
+  if (!isFinite(lo) || !isFinite(hi)) { lo = 0; hi = 1; }
+  let yMin = lo, yMax = hi;
+  const yRange = yMax - yMin || 1; const yPad = yRange * 0.08; yMin -= yPad; yMax += yPad; const yRangeP = yMax - yMin || 1;
+
+  pctx.fillStyle = bgCol; pctx.fillRect(pm.left, pm.top, pw, ph);
+  pctx.strokeStyle = gridCol; pctx.lineWidth = 0.5;
+  const yTicks = niceTicks(yMin, yMax, 4), xTicks = niceTicks(xMin, xMax, 5);
+  for (const tv of yTicks) { const py = pm.top + ph - ((tv - yMin) / yRangeP) * ph; if (py < pm.top || py > pm.top + ph) continue; pctx.beginPath(); pctx.moveTo(pm.left, py); pctx.lineTo(pm.left + pw, py); pctx.stroke(); }
+  for (const tv of xTicks) { const px = xToPx(tv); if (px < pm.left || px > pm.left + pw) continue; pctx.beginPath(); pctx.moveTo(px, pm.top); pctx.lineTo(px, pm.top + ph); pctx.stroke(); }
+  pctx.strokeStyle = axisCol; pctx.lineWidth = 1; pctx.strokeRect(pm.left + 0.5, pm.top + 0.5, pw, ph);
+  pctx.fillStyle = axisCol;
+  const tickLen = 4;
+  pctx.font = '11px Arial'; pctx.textAlign = 'center'; pctx.textBaseline = 'top';
+  for (const tv of xTicks) { const px = xToPx(tv); if (px < pm.left || px > pm.left + pw) continue; pctx.beginPath(); pctx.moveTo(px, pm.top + ph); pctx.lineTo(px, pm.top + ph - tickLen); pctx.stroke(); pctx.beginPath(); pctx.moveTo(px, pm.top); pctx.lineTo(px, pm.top + tickLen); pctx.stroke(); pctx.fillText(fmt(tv), px, pm.top + ph + 6); }
+  pctx.font = '12px Arial'; pctx.fillText(xLabel + (xUnit ? ` (${xUnit})` : ''), pm.left + pw / 2, h - 15);
+  pctx.font = '11px Arial'; pctx.textAlign = 'right'; pctx.textBaseline = 'middle';
+  for (const tv of yTicks) { const py = pm.top + ph - ((tv - yMin) / yRangeP) * ph; if (py < pm.top || py > pm.top + ph) continue; pctx.beginPath(); pctx.moveTo(pm.left, py); pctx.lineTo(pm.left + tickLen, py); pctx.stroke(); pctx.beginPath(); pctx.moveTo(pm.left + pw, py); pctx.lineTo(pm.left + pw - tickLen, py); pctx.stroke(); pctx.fillText(fmt(tv), pm.left - 6, py); }
+  pctx.save(); pctx.translate(14, pm.top + ph / 2); pctx.rotate(-Math.PI / 2);
+  pctx.textAlign = 'center'; pctx.textBaseline = 'middle'; pctx.font = '12px Arial'; pctx.fillStyle = axisCol;
+  pctx.fillText(zLabel + (zUnit ? ` (${zUnit})` : ''), 0, 0); pctx.restore();
+  pctx.font = '12px Arial'; pctx.fillStyle = sliceCol; pctx.textAlign = 'left'; pctx.textBaseline = 'top';
+  pctx.fillText(`${sliceAxisLabel} = ${fmt(sliceVal)}`, pm.left + 2, 4);
+  pctx.save(); pctx.beginPath(); pctx.rect(pm.left, pm.top, pw, ph); pctx.clip();
+  pctx.strokeStyle = lineCol; pctx.lineWidth = n > 20000 ? 1 : 1.5; pctx.beginPath();
+  let started = false;
+  if (direct) {
+    for (let i = 0; i < n; i++) {
+      const xv = xAxis[i];
+      if (xv < xMin || xv > xMax) continue;
+      const v = yData[i];
+      if (v !== v || v === Infinity || v === -Infinity) continue;
+      const px = xToPx(xv);
+      const py = pm.top + ph - ((v - yMin) / yRangeP) * ph;
+      if (!started) { pctx.moveTo(px, py); started = true; } else pctx.lineTo(px, py);
+    }
+  } else {
+    for (let b = 0; b < nb; b++) {
+      if (!bX[b]) continue;
+      const pxC = bX[b];
+      const pLo = pm.top + ph - ((bMin[b] - yMin) / yRangeP) * ph;
+      const pHi = pm.top + ph - ((bMax[b] - yMin) / yRangeP) * ph;
+      if (!started) { pctx.moveTo(pxC, pLo); pctx.lineTo(pxC, pHi); started = true; }
+      else { pctx.lineTo(pxC, pLo); pctx.lineTo(pxC, pHi); }
+    }
+  }
+  pctx.stroke(); pctx.restore();
+  // Crosshair position marker: a dashed vertical line at the cursor's value along this
+  // profile's horizontal axis, so the in-image crosshair is reflected into both profiles.
+  if (showMarker && markerVal !== undefined && markerVal !== null && isFinite(markerVal)) {
+    const mv = xToPx(markerVal);
+    if (mv >= pm.left - 0.5 && mv <= pm.left + pw + 0.5) {
+      const themeX = getTheme();
+      const markCol = themeX === 'dark' ? '#ffb454' : '#e07000';
+      pctx.save();
+      pctx.strokeStyle = markCol;
+      pctx.lineWidth = 1;
+      if (pctx.setLineDash) pctx.setLineDash([4, 3]);
+      pctx.beginPath();
+      pctx.moveTo(mv, pm.top);
+      pctx.lineTo(mv, pm.top + ph);
+      pctx.stroke();
+      if (pctx.setLineDash) pctx.setLineDash([]);
+      pctx.restore();
+    }
+  }
+}
+
+// ===== Responsive / DPR-aware sizing (single ResizeObserver, rAF-debounced) =====
+function resizeCanvases() {
+  dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+  const cw = Math.max(1, canvas.clientWidth), ch = Math.max(1, canvas.clientHeight);
+  const bw = Math.round(cw * dpr), bh = Math.round(ch * dpr);
+  if (canvas.width !== bw || canvas.height !== bh) { canvas.width = bw; canvas.height = bh; ovl.width = bw; ovl.height = bh; }
+  plotGeo = { ox: margin.left, oy: margin.top, dw: cw - margin.left - margin.right, dh: ch - margin.top - margin.bottom };
+  refreshRects();
+  if (currentData) schedule({ forceProfiles: true, heat: true, colorbar: true, cross: (crossPx ? lastHoverPt : null) });
+}
+let resizeRaf = 0;
+const ro = new ResizeObserver(() => {
+  if (!resizeRaf) resizeRaf = requestAnimationFrame(() => { resizeRaf = 0; resizeCanvases(); });
+});
+ro.observe(plotAreaEl);
+
+function plotData(data) {
+  currentData = data;
+  physicalData = data; analysisState.epoch = (analysisState.epoch || 0) + 1; // invalidate stale analyses
+  const { array } = data; const ny = array.dims[0], nx = array.dims[1];
+  heatBuf.width = nx; heatBuf.height = ny;
+  heatImg = heatBufCtx.createImageData(nx, ny);   // ONE reusable backing buffer (was per redraw)
+  heatU32 = new Uint32Array(heatImg.data.buffer); // 32-bit pixel writes (was 4 byte writes + array alloc per pixel)
+  const vals = array.values;
+  let m0 = Infinity, m1 = -Infinity;
+  for (let i = 0; i < vals.length; i++) { const v = vals[i]; if (v !== v) continue; if (v < m0) m0 = v; if (v > m1) m1 = v; }
+  dataMin = isFinite(m0) ? m0 : 0; dataMax = isFinite(m1) ? m1 : 1;
+  colorScale = { min: dataMin, max: dataMax, range: dataMax - dataMin || 1 };
+  view = { i0: 0, i1: nx - 1, j0: 0, j1: ny - 1 };
+  profileState = null;
+  colScratch = null; profileBuckets = null;
+  cbarStrip = null; cbarStripKey = null;
+  cursorIdx = { cx: nx >> 1, cy: ny >> 1, fi: nx >> 1, fj: ny >> 1 };
+  resizeCanvases();
+  renderHeatBuffer();
+  drawHeatmapWithAxes();
+  drawColorbar();
+  drawOverlayNow(null); // no crosshair yet on fresh data (sets crossPx before profiles draw)
+  drawProfilesIfNeeded(cursorIdx.cx, cursorIdx.cy, (cursorIdx.fi != null ? cursorIdx.fi : cursorIdx.cx), (cursorIdx.fj != null ? cursorIdx.fj : cursorIdx.cy));
+  zminEl.value = dataMin.toExponential(3); zmaxEl.value = dataMax.toExponential(3);
+  fileInfoEl.textContent = `${data.objectName} | ${array.name || 'Array'}: ${nx}×${ny} | X: ${data.xaxis.label||'x'} [${data.xaxis.values[0].toFixed(3)}, ${data.xaxis.values[nx-1].toFixed(3)}] ${data.xaxis.unit||''} | Y: ${data.yaxis.label||'y'} [${data.yaxis.values[0].toFixed(3)}, ${data.yaxis.values[ny-1].toFixed(3)}] ${data.yaxis.unit||''}`;
+  if (rafId) { cancelAnimationFrame(rafId); rafId = 0; } // everything drew synchronously already
+  dirtyHeat = dirtyRecolor = dirtyProfiles = dirtyColorbar = dirtyOverlay = dirtyCursor = false;
+  pendingCross = null; pendingCursor = null;
+  if (anaIsDerived()) anaStart(); // recompute analysis for the new file
+}
+
+function changeColormap(name) { currentColormap = name; buildLUT(); if (currentData) schedule({ recolor: true, colorbar: true }); }
+function toggleInvert() { invertColormap = document.getElementById('invertCheckbox').checked; buildLUT(); if (currentData) schedule({ recolor: true, colorbar: true }); }
+function updateZRange() {
+  if (!currentData) return;
+  const min = parseFloat(zminEl.value), max = parseFloat(zmaxEl.value);
+  if (!isNaN(min) && !isNaN(max)) { colorScale = { min: min, max: max, range: max - min || 1 }; schedule({ recolor: true, colorbar: true }); }
+}
+function resetView() {
+  if (!currentData) return;
+  const nx = currentData.array.dims[1], ny = currentData.array.dims[0];
+  view = { i0: 0, i1: nx - 1, j0: 0, j1: ny - 1 };
+  colorScale = { min: dataMin, max: dataMax, range: dataMax - dataMin || 1 };
+  cursorIdx = { cx: nx >> 1, cy: ny >> 1, fi: nx >> 1, fj: ny >> 1 };
+  zminEl.value = dataMin.toExponential(3); zmaxEl.value = dataMax.toExponential(3);
+  schedule({ recolor: true, colorbar: true, forceProfiles: true, cross: null, cursor: { cx: nx >> 1, cy: ny >> 1, fi: nx >> 1, fj: ny >> 1 } });
+  statusEl.textContent = 'View reset';
+}
+
+// ===== Mouse & Touch helpers (cached rects: no layout thrash on hover) =====
+function clientToIndex(clientX, clientY) {
+  const rect = canvasRect || canvas.getBoundingClientRect();
+  const mx = (clientX - rect.left) * ((canvas.width / dpr) / rect.width);
+  const my = (clientY - rect.top) * ((canvas.height / dpr) / rect.height);
+  const { ox, oy, dw, dh } = plotGeo;
+  const fi = (mx - ox) / dw * (view.i1 - view.i0) + view.i0;
+  const fj = (my - oy) / dh * (view.j1 - view.j0) + view.j0;
+  // inside: pointer is within the data plot rectangle (not the axis/label margins)
+  const inside = mx >= ox && mx <= ox + dw && my >= oy && my <= oy + dh;
+  return { fi: fi, fj: fj, cx: Math.floor(fi), cy: Math.floor(fj), inside: inside };
+}
+
+function applyZoom(factor, centerFi, centerFj) {
+  const nx = currentData.array.dims[1], ny = currentData.array.dims[0];
+  view.i0 = centerFi - (centerFi - view.i0) * factor;
+  view.i1 = centerFi + (view.i1 - centerFi) * factor;
+  view.j0 = centerFj - (centerFj - view.j0) * factor;
+  view.j1 = centerFj + (view.j1 - centerFj) * factor;
+  const minSize = 2;
+  if (view.i1 - view.i0 < minSize) { const c = (view.i0 + view.i1) / 2; view.i0 = c - minSize/2; view.i1 = c + minSize/2; }
+  if (view.j1 - view.j0 < minSize) { const c = (view.j0 + view.j1) / 2; view.j0 = c - minSize/2; view.j1 = c + minSize/2; }
+  if (view.i0 < 0) { view.i1 -= view.i0; view.i0 = 0; }
+  if (view.i1 > nx - 1) { view.i0 -= (view.i1 - (nx - 1)); view.i1 = nx - 1; }
+  if (view.i1 > nx - 1) view.i1 = nx - 1;
+  if (view.j0 < 0) { view.j1 -= view.j0; view.j0 = 0; }
+  if (view.j1 > ny - 1) { view.j0 -= (view.j1 - (ny - 1)); view.j1 = ny - 1; }
+  if (view.i0 < 0) view.i0 = 0; if (view.j0 < 0) view.j0 = 0;
+}
+
+function applyPan(dx, dy) {
+  const nx = currentData.array.dims[1], ny = currentData.array.dims[0];
+  const { dw, dh } = plotGeo;
+  const di = dx / dw * (view.i1 - view.i0);
+  const dj = dy / dh * (view.j1 - view.j0);
+  view.i0 -= di; view.i1 -= di; view.j0 -= dj; view.j1 -= dj;
+  if (view.i0 < 0) { view.i1 -= view.i0; view.i0 = 0; }
+  if (view.i1 > nx - 1) { view.i0 -= (view.i1 - (nx - 1)); view.i1 = nx - 1; }
+  if (view.i1 > nx - 1) view.i1 = nx - 1;
+  if (view.j0 < 0) { view.j1 -= view.j0; view.j0 = 0; }
+  if (view.j1 > ny - 1) { view.j0 -= (view.j1 - (ny - 1)); view.j1 = ny - 1; }
+  if (view.i0 < 0) view.i0 = 0; if (view.j0 < 0) view.j0 = 0;
+}
+
+function setCursorText(c) {
+  if (!currentData) return;
+  const nx = currentData.array.dims[1], ny = currentData.array.dims[0];
+  if (c.cx < 0 || c.cx >= nx || c.cy < 0 || c.cy >= ny) return;
+  const { xaxis, yaxis, array } = currentData;
+  const zv = array.values[c.cy * nx + c.cx];
+  const zTxt = (zv === zv && isFinite(zv)) ? zv.toExponential(4) : 'NaN';
+  let txt = `${xaxis.label||'X'}: ${indexToX(c.fi).toFixed(4)} ${xaxis.unit||''} | ${yaxis.label||'Y'}: ${rowToEnergy(c.fj).toFixed(4)} ${yaxis.unit||''} | ${array.label||'Z'}: ${zTxt} ${array.unit||''}`;
+  // ARPES quick peak fits at the cursor: EDC (along energy at the hovered k) and
+  // MDC (along k at the hovered energy), located via a sub-sample quadratic peak.
+  const pk = anaCursorPeaks(c.cx, c.cy);
+  if (pk) {
+    if (pk.edc) txt += ` | EDC peak ${yaxis.label||'Y'}=${rowToEnergy(pk.edc.idx).toFixed(4)} ${yaxis.unit||''} Γ≈${(pk.edc.fwhm * pk.dw).toFixed(4)}`;
+    if (pk.mdc) txt += ` | MDC peak ${xaxis.label||'X'}=${indexToX(pk.mdc.idx).toFixed(4)} ${xaxis.unit||''} Γ≈${(pk.mdc.fwhm * pk.dk).toFixed(4)}`;
+  }
+  if (cursorTextEl.textContent !== txt) cursorTextEl.textContent = txt; // DOM write only when changed
+}
+// Peak fit helper: extracts the EDC (energy profile at column cx) and MDC (momentum
+// profile at row cy) from the CURRENT image and locates their strongest peak. Runs
+// only when derived analysis is active to keep the hover path cheap on raw data.
+function anaCursorPeaks(cx, cy) {
+  if (!anaIsDerived() || !currentData) return null;
+  const nx = currentData.array.dims[1], ny = currentData.array.dims[0];
+  const vals = currentData.array.values;
+  // EDC: column cx over rows 0..ny-1
+  if (!anaEdcScratch || anaEdcScratch.length !== ny) anaEdcScratch = new Float64Array(ny);
+  for (let j = 0; j < ny; j++) anaEdcScratch[j] = vals[j * nx + cx];
+  // MDC: row cy over columns 0..nx-1
+  if (!anaMdcScratch || anaMdcScratch.length !== nx) anaMdcScratch = new Float64Array(nx);
+  for (let i = 0; i < nx; i++) anaMdcScratch[i] = vals[cy * nx + i];
+  const edc = anaPeakFit(anaEdcScratch);
+  const mdc = anaPeakFit(anaMdcScratch);
+  const dk = nx > 1 ? (currentData.xaxis.values[nx - 1] - currentData.xaxis.values[0]) / (nx - 1) : 1;
+  const dw = ny > 1 ? (currentData.yaxis.values[ny - 1] - currentData.yaxis.values[0]) / (ny - 1) : 1;
+  return { edc: edc, mdc: mdc, dk: Math.abs(dk), dw: Math.abs(dw) };
+}
+let anaEdcScratch = null, anaMdcScratch = null;
+
+// ===== Mouse =====
+canvas.addEventListener('wheel', (e) => {
+  if (!currentData || !plotGeo) return; e.preventDefault();
+  const { fi, fj, cx, cy, inside } = clientToIndex(e.clientX, e.clientY);
+  applyZoom(e.deltaY < 0 ? 0.85 : 1.15, fi, fj);
+  cursorIdx = { cx: cx, cy: cy, fi: fi, fj: fj };
+  drawOverlayNow(inside ? { fi: fi, fj: fj } : null); // crosshair only over the data area
+  schedule({ heat: true, profiles: true, cursor: { cx: cx, cy: cy, fi: fi, fj: fj } });
+}, { passive: false });
+
+canvas.addEventListener('mousedown', (e) => { if (!currentData || !plotGeo) return; if (e.button === 0) { isPanning = true; canvas.classList.add('panning'); panLastX = e.clientX; panLastY = e.clientY; refreshRects(); drawOverlayNow(null); } });
+
+canvas.addEventListener('mousemove', (e) => {
+  if (!currentData || !plotGeo) return;
+  const rect = canvasRect || canvas.getBoundingClientRect();
+  if (isPanning) {
+    const dx = (e.clientX - panLastX) * ((canvas.width / dpr) / rect.width);
+    const dy = (e.clientY - panLastY) * ((canvas.height / dpr) / rect.height);
+    applyPan(dx, dy);
+    panLastX = e.clientX; panLastY = e.clientY;
+    const idx = clientToIndex(e.clientX, e.clientY);
+    cursorIdx = { cx: idx.cx, cy: idx.cy, fi: idx.fi, fj: idx.fj };
+    schedule({ heat: true, profiles: true });
+    return;
+  }
+  const { fi, fj, cx, cy, inside } = clientToIndex(e.clientX, e.clientY);
+  cursorIdx = { cx: cx, cy: cy, fi: fi, fj: fj };
+  // Only draw the crosshair when the pointer is over the data area; in the axis/label
+  // margins the plot rectangle is not covered by data, so a crosshair there is meaningless.
+  if (!inside) {
+    drawOverlayNow(null);
+    schedule({ profiles: true });
+    return;
+  }
+  // Crosshair drawn SYNCHRONOUSLY here (clear + 2 lines, < 0.1 ms): zero added
+  // frame delay, immune to any heavy work batched in the rAF tick.
+  drawOverlayNow({ fi: fi, fj: fj });
+  // Heavy, non-pointer-critical work stays coalesced: at most once per frame.
+  schedule({ profiles: true, cursor: { cx: cx, cy: cy, fi: fi, fj: fj } });
+});
+
+canvas.addEventListener('mouseup', () => { isPanning = false; canvas.classList.remove('panning'); });
+canvas.addEventListener('mouseleave', () => { isPanning = false; canvas.classList.remove('panning'); drawOverlayNow(null); schedule({ profiles: true }); });
+
+// ===== Touch (pinch-zoom & pan) =====
+canvas.addEventListener('touchstart', (e) => {
+  if (!currentData || !plotGeo) return;
+  e.preventDefault();
+  if (!canvasRect) refreshRects();
+  if (e.touches.length === 1) { touchMode = 'pan'; touchLastX = e.touches[0].clientX; touchLastY = e.touches[0].clientY; drawOverlayNow(null); }
+  else if (e.touches.length === 2) { touchMode = 'pinch'; const dx = e.touches[0].clientX - e.touches[1].clientX; const dy = e.touches[0].clientY - e.touches[1].clientY; lastPinchDist = Math.sqrt(dx*dx + dy*dy); drawOverlayNow(null); }
+}, { passive: false });
+
+canvas.addEventListener('touchmove', (e) => {
+  if (!currentData || !plotGeo) return;
+  e.preventDefault();
+  const rect = canvasRect || canvas.getBoundingClientRect();
+  if (touchMode === 'pan' && e.touches.length === 1) {
+    const dx = (e.touches[0].clientX - touchLastX) * ((canvas.width / dpr) / rect.width);
+    const dy = (e.touches[0].clientY - touchLastY) * ((canvas.height / dpr) / rect.height);
+    applyPan(dx, dy);
+    touchLastX = e.touches[0].clientX; touchLastY = e.touches[0].clientY;
+    const idx = clientToIndex(e.touches[0].clientX, e.touches[0].clientY);
+    cursorIdx = { cx: idx.cx, cy: idx.cy, fi: idx.fi, fj: idx.fj };
+    schedule({ heat: true, profiles: true });
+  } else if (touchMode === 'pinch' && e.touches.length === 2) {
+    const dx = e.touches[0].clientX - e.touches[1].clientX;
+    const dy = e.touches[0].clientY - e.touches[1].clientY;
+    const dist = Math.sqrt(dx*dx + dy*dy);
+    if (dist > 0) {
+      const factor = lastPinchDist / dist;
+      const cxm = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+      const cym = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+      const { fi, fj, cx, cy } = clientToIndex(cxm, cym);
+      applyZoom(factor, fi, fj);
+      lastPinchDist = dist;
+      cursorIdx = { cx: cx, cy: cy, fi: fi, fj: fj };
+      schedule({ heat: true, profiles: true });
+    }
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchend', (e) => {
+  if (e.touches.length === 0) {
+    if (touchMode === 'pan' && e.changedTouches.length === 1) {
+      const { fi, fj, cx, cy, inside } = clientToIndex(e.changedTouches[0].clientX, e.changedTouches[0].clientY);
+      cursorIdx = { cx: cx, cy: cy, fi: fi, fj: fj };
+      drawOverlayNow(inside ? { fi: fi, fj: fj } : null);
+      schedule({ cursor: { cx: cx, cy: cy, fi: fi, fj: fj }, profiles: true });
+    }
+    touchMode = null;
+  } else if (e.touches.length === 1) {
+    touchMode = 'pan'; touchLastX = e.touches[0].clientX; touchLastY = e.touches[0].clientY; lastPinchDist = 0;
+  }
+}, { passive: false });
+
+// ===== Colorbar drag (mouse + touch) - rAF-coalesced =====
+function cbGetMx(clientX) {
+  const rect = (cbRect || cbC.getBoundingClientRect());
+  return (clientX - rect.left) * ((cbC.clientWidth || rect.width) / rect.width);
+}
+function cbStartDrag(mx) {
+  if (Math.abs(mx - cbHandlePos.minX) < 15) cbDragging = 'min';
+  else if (Math.abs(mx - cbHandlePos.maxX) < 15) cbDragging = 'max';
+  else { cbDragging = Math.abs(mx - cbHandlePos.minX) < Math.abs(mx - cbHandlePos.maxX) ? 'min' : 'max'; }
+}
+function cbUpdateDrag(mx) {
+  if (!cbDragging || !currentData) return;
+  const barW = cbC.clientWidth - cbLayout.padL - cbLayout.padR;
+  const frac = Math.max(0, Math.min(1, (mx - cbLayout.padL) / barW));
+  const val = dataMin + frac * (dataMax - dataMin);
+  if (cbDragging === 'min') { colorScale.min = Math.min(val, colorScale.max - (dataMax - dataMin) * 0.001); } else { colorScale.max = Math.max(val, colorScale.min + (dataMax - dataMin) * 0.001); }
+  colorScale.range = colorScale.max - colorScale.min;
+  zminEl.value = colorScale.min.toExponential(3);
+  zmaxEl.value = colorScale.max.toExponential(3);
+  schedule({ recolor: true, colorbar: true }); // at most ONE recolour per frame no matter how fast the pointer moves
+}
+cbC.addEventListener('mousedown', (e) => { cbStartDrag(cbGetMx(e.clientX)); });
+window.addEventListener('mousemove', (e) => { if (cbDragging) cbUpdateDrag(cbGetMx(e.clientX)); });
+window.addEventListener('mouseup', () => { cbDragging = null; });
+cbC.addEventListener('dblclick', () => {
+  if (!currentData) return;
+  colorScale = { min: dataMin, max: dataMax, range: dataMax - dataMin || 1 };
+  zminEl.value = dataMin.toExponential(3); zmaxEl.value = dataMax.toExponential(3);
+  schedule({ recolor: true, colorbar: true });
+});
+cbC.addEventListener('touchstart', (e) => { e.preventDefault(); cbStartDrag(cbGetMx(e.touches[0].clientX)); }, { passive: false });
+cbC.addEventListener('touchmove', (e) => { e.preventDefault(); if (cbDragging) cbUpdateDrag(cbGetMx(e.touches[0].clientX)); }, { passive: false });
+cbC.addEventListener('touchend', () => { cbDragging = null; }, { passive: false });
+
+// ===== Context menu =====
+const ctxMenu = document.getElementById('ctxMenu');
+plotAreaEl.addEventListener('contextmenu', (e) => { e.preventDefault(); ctxMenu.style.display = 'block'; ctxMenu.style.left = Math.min(e.clientX, window.innerWidth - 180) + 'px'; ctxMenu.style.top = Math.min(e.clientY, window.innerHeight - 130) + 'px'; });
+document.addEventListener('click', () => { ctxMenu.style.display = 'none'; });
+ctxMenu.addEventListener('click', (e) => { e.stopPropagation(); });
+function savePNG() {
+  ctxMenu.style.display = 'none';
+  if (!currentData) return;
+  canvas.toBlob(function(blob) { // toBlob + object URL: no giant base64 string in memory
+    if (!blob) return;
+    const link = document.createElement('a');
+    link.download = 'heatmap.png';
+    link.href = URL.createObjectURL(blob);
+    link.click();
+    setTimeout(function() { URL.revokeObjectURL(link.href); }, 5000);
+  }, 'image/png');
+}
+
+// ===== File loading (parsing via Web Worker; UI never blocks) =====
+async function processFile(file) {
+  showLoading('Parsing HDF5 file...');
+  try {
+    const buffer = await file.arrayBuffer();
+    const t0 = performance.now();
+    const data = await parseInWorker(buffer);
+    plotData(data);
+    statusEl.textContent = `Loaded: ${file.name} (${Math.round(performance.now() - t0)} ms)`;
+  } catch (err) {
+    statusEl.textContent = `Error: ${err.message}`;
+  } finally {
+    hideLoading();
+  }
+}
+
+// Last location is remembered the same way as hdf5_viewer02.html: plain
+// strings in localStorage ('hdf5_lastFile' = file name, 'hdf5_lastDir' =
+// parent folder name from getParent()), and the file picker opens with
+// startIn: lastDir || 'documents'.
+async function loadFile() {
+  let lastDir = null;
+  try { lastDir = localStorage.getItem('hdf5_lastDir'); } catch (e) {}
+  const input = document.getElementById('fileInput');
+  input.onchange = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try { localStorage.setItem('hdf5_lastFile', file.name); } catch (err) {}
+    processFile(file);
+    input.value = '';
+  };
+  if (window.showOpenFilePicker) {
+    try {
+      const options = { types: [{ description: 'HDF5 files', accept: { 'application/octet-stream': ['.h5', '.hdf5', '.hdf'] } }], startIn: lastDir || 'documents' };
+      const handles = await window.showOpenFilePicker(options);
+      const file = await handles[0].getFile();
+      processFile(file);
+      try {
+        const dirHandle = await handles[0].getParent();
+        localStorage.setItem('hdf5_lastDir', dirHandle.name);
+      } catch(e) {}
+    } catch (err) { if (err.name !== 'AbortError') input.click(); }
+  } else {
+    input.click();
+  }
+}
+function loadDemo() {
+  showLoading('Generating demo data...');
+  setTimeout(() => {
+    const nx = 200, ny = 300;
+    const xa = new Float64Array(nx), ya = new Float64Array(ny), arr = new Float64Array(nx*ny);
+    for (let i = 0; i < nx; i++) xa[i] = i * 0.02;
+    for (let i = 0; i < ny; i++) ya[i] = -6 + i * 0.04;
+    for (let y = 0; y < ny; y++) for (let x = 0; x < nx; x++) { const xv=xa[x],yv=ya[y]; const p1=Math.exp(-((xv-1)**2+yv**2)/0.5),p2=Math.exp(-((xv-2)**2+(yv-1)**2)/0.3),p3=Math.exp(-((xv-0.5)**2+(yv+2)**2)/0.4); arr[y*nx+x]=0.3+0.4*p1+0.3*p2+0.2*p3+0.02*Math.sin(yv*3); }
+    plotData({ xaxis: { values: xa, label: 'k-path', unit: 'r.l.u' }, yaxis: { values: ya, label: 'Energy', unit: 'eV' }, array: { values: arr, dims: [ny,nx], label: 'A(k,w)', unit: '1/eV', name: 'Spectral Function' }, objectName: 'Demo Data' });
+    statusEl.textContent = 'Loaded demo data'; hideLoading();
+  }, 100);
+}
+function showLoading(t) { document.getElementById('loadText').textContent = t; document.getElementById('loadOverlay').style.display = 'flex'; }
+function hideLoading() { document.getElementById('loadOverlay').style.display = 'none'; }
+
+window.loadFile = loadFile; window.loadDemo = loadDemo; window.resetView = resetView; window.changeColormap = changeColormap; window.toggleInvert = toggleInvert; window.updateZRange = updateZRange; window.savePNG = savePNG; window.toggleTheme = toggleTheme; window.onAnalysisMode = onAnalysisMode; window.onSigmaLabel = onSigmaLabel; window.onSigmaChange = onSigmaChange; window.onSensLabel = onSensLabel; window.onSensChange = onSensChange; window.onW2dChange = onW2dChange; window.onEFChange = onEFChange; window.onRidgeToggle = onRidgeToggle; window.onOrientChange = onOrientChange; window.onPolarityChange = onPolarityChange; window.exportRidgeCSV = exportRidgeCSV;
+
+
+// ===== Dispersion analysis: UI state, worker routing, overlay & CSV =====
+let physicalData = null;    // raw parsed dataset (always kept)
+let derivedData = null;     // analysis image wrapped as a data-like object
+let analysisRidges = null;  // encoded ridge segments (Float64Array) or null
+const analysisState = { mode: 'raw', sigma: 2.0, wantRidge: false, sens: 0.30, orient: 'auto', polarity: 'abs', weight2d: 1.0, ef: null, lastReqId: 0, lastOrient: 'row', epoch: 0, peakInfo: null, autoTriedOther: false, lastPolarity: 'abs' };
+const anaEpochs = {};       // reqId -> epoch snapshot (reject results from a previous file)
+const ANA_MODES = {
+  raw: 'Raw',
+  sym: 'Fermi-symmetrized',
+  d2k: '\u2202\u00B2I/\u2202k\u00B2',
+  d2w: '\u2202\u00B2I/\u2202\u03C9\u00B2',
+  grad: '|grad I|',
+  curv_k: 'Curvature C(k,\u03C9) MDC-type',
+  curv_w: 'Curvature C(k,\u03C9) EDC-type',
+  curv2d: 'Curvature C2D = Cedc + w\u00B7Cmdc'
+};
+function anaIsDerived() { return analysisState.mode !== 'raw'; }
+
+function onAnalysisMode() {
+  analysisState.mode = document.getElementById('anaMode').value;
+  analysisState.autoTriedOther = false;
+  anaControlsEnable();
+  anaStart();
+}
+function onSigmaLabel() { document.getElementById('anaSigmaVal').textContent = parseFloat(document.getElementById('anaSigma').value).toFixed(2); }
+function onSigmaChange() { onSigmaLabel(); analysisState.sigma = parseFloat(document.getElementById('anaSigma').value); analysisState.autoTriedOther = false; anaStart(); }
+function onSensLabel() { document.getElementById('anaSensVal').textContent = parseFloat(document.getElementById('anaSens').value).toFixed(2); }
+function onSensChange() {
+  onSensLabel();
+  analysisState.sens = parseFloat(document.getElementById('anaSens').value);
+  if (analysisState.wantRidge && physicalData) { analysisState.autoTriedOther = false; anaStart(); }
+}
+function onW2dChange() {
+  const el = document.getElementById('anaW2d');
+  const v = parseFloat(el.value);
+  if (isFinite(v) && v >= 0) {            // user types a plain number: "1", "0.5", "2"
+    analysisState.weight2d = v;
+    if (analysisState.mode === 'curv2d') anaStart();
+  } else {                                // blank or invalid: keep the last valid weight
+    el.value = '';
+    statusEl.textContent = 'w2D: type a number \u2265 0 (currently w=' + analysisState.weight2d + ')';
+  }
+}
+function onEFChange() {
+  const el = document.getElementById('anaEF');
+  const v = parseFloat(el.value);
+  analysisState.ef = isFinite(v) ? v : null;
+  if (analysisState.mode === 'sym') anaStart();
+}
+function onRidgeToggle() {
+  analysisState.wantRidge = document.getElementById('anaRidge').checked;
+  anaControlsEnable();
+  if (!physicalData) return;
+  if (!analysisState.wantRidge) { analysisRidges = null; drawOverlayNow(crossPx ? lastHoverPt : null); return; }
+  anaStart();
+}
+function onOrientChange() {
+  analysisState.orient = document.getElementById('anaOrient').value;
+  if (analysisState.wantRidge && physicalData) { analysisState.autoTriedOther = false; anaStart(); }
+}
+function onPolarityChange() {
+  analysisState.polarity = document.getElementById('anaPolarity').value;
+  if (analysisState.wantRidge && physicalData) { analysisState.autoTriedOther = false; anaStart(); }
+}
+function anaControlsEnable() {
+  const dis = !anaIsDerived();
+  document.getElementById('anaSigma').disabled = dis;
+  document.getElementById('anaRidge').disabled = dis;
+  const rdis = dis || !analysisState.wantRidge;
+  document.getElementById('anaOrient').disabled = rdis;
+  document.getElementById('anaPolarity').disabled = rdis;
+  document.getElementById('anaSens').disabled = rdis;
+  document.getElementById('anaW2d').disabled = (analysisState.mode !== 'curv2d');
+  // E_F is meaningful to set at any time (it also seeds future symmetrizations), so keep it enabled.
+}
+
+function anaStart() {
+  if (!physicalData) return;
+  if (!anaIsDerived()) { // back to raw
+    derivedData = null; analysisRidges = null; analysisState.peakInfo = null;
+    anaInstallDerived();
+    statusEl.textContent = 'Analysis: raw data';
+    return;
+  }
+  const st = analysisState;
+  const d = physicalData;
+  const nx = d.array.dims[1], ny = d.array.dims[0];
+  const reqId = ++st.lastReqId;
+  const epoch = st.epoch;
+  anaEpochs[reqId] = epoch;
+  let orient = st.orient === 'auto' ? anaAutoOrient(st.mode) : st.orient;
+  // Auto orientation fallback: if the auto-picked scan direction yields no ridge, retry the other.
+  if (st.orient === 'auto' && st.autoTriedOther) { orient = (orient === 'row') ? 'col' : 'row'; }
+  st.lastOrient = orient;
+  st.lastPolarity = st.polarity;
+  const ef = (typeof st.ef === 'number') ? st.ef : ((d.yaxis.values[0] + d.yaxis.values[ny - 1]) / 2);
+  const valsCopy = d.array.values.slice();
+  const xCopy = d.xaxis.values.slice(), yCopy = d.yaxis.values.slice();
+  statusEl.textContent = 'Computing ' + ANA_MODES[st.mode] + ' (\u03C3=' + st.sigma + ')\u2026';
+  const w = getParseWorker();
+  if (!w) { // graceful fallback: compute on the main thread
+    setTimeout(function () {
+      try {
+        const R = anaCompute(valsCopy, nx, ny, xCopy, yCopy, st.mode, st.sigma, st.weight2d, { ef: ef });
+        const segs = st.wantRidge && st.mode !== 'raw' ? anaRidgeSegments(R.vals, nx, ny, orient, st.sens, st.sigma, st.polarity) : new Float64Array([0]);
+        anaFinish(reqId, R.vals, R.xax, R.yax, segs);
+      } catch (err) { statusEl.textContent = 'Analysis error: ' + err.message; }
+    }, 10);
+    return;
+  }
+  workerAnalysisHandler = function (m) {
+    if (m.reqId !== reqId) return;        // stale reply: stay installed for MY reply
+    workerAnalysisHandler = null;
+    if (!m.ok) { statusEl.textContent = 'Analysis error: ' + (m.error || 'unknown'); return; }
+    anaFinish(reqId, m.vals, m.xax, m.yax, m.segs);
+  };
+  w.onerror = function(e) {
+    if (workerAnalysisHandler) workerAnalysisHandler = null;
+    statusEl.textContent = 'Analysis worker error: ' + ((e && e.message) ? e.message : 'unknown');
+  };
+  w.postMessage({ cmd: 'analysis', reqId: reqId, vals: valsCopy, nx: nx, ny: ny, xax: xCopy, yax: yCopy,
+    mode: st.mode, sigma: st.sigma, orient: orient, wantRidge: st.wantRidge, sens: st.sens, polarity: st.polarity, w2d: st.weight2d, opts: { ef: ef } },
+    [valsCopy.buffer, xCopy.buffer, yCopy.buffer]);
+}
+
+function anaFinish(reqId, vals, xax, yax, segs) {
+  const st = analysisState;
+  if (anaEpochs[reqId] !== st.epoch || reqId !== st.lastReqId) { delete anaEpochs[reqId]; return; } // superseded / new file
+  delete anaEpochs[reqId];
+  const d = physicalData;
+  derivedData = {
+    objectName: d.objectName,
+    xaxis: { values: xax, name: d.xaxis.name, label: d.xaxis.label, unit: d.xaxis.unit },
+    yaxis: { values: yax, name: d.yaxis.name, label: d.yaxis.label, unit: d.yaxis.unit },
+    array: { values: vals, dims: [d.array.dims[0], d.array.dims[1]],
+             name: (d.array.name || 'Array'), label: ANA_MODES[st.mode] + ' [\u03C3=' + st.sigma + ']', unit: '' }
+  };
+  analysisRidges = st.wantRidge ? segs : null;
+  // Auto-orientation fallback: if ridge was requested, orient is auto, and NO segment was found,
+  // retry once with the other scan direction before giving up.
+  if (st.wantRidge && st.orient === 'auto' && (!analysisRidges || !(analysisRidges.length && analysisRidges[0] > 0)) && !st.autoTriedOther) {
+    st.autoTriedOther = true;
+    anaStart();
+    return;
+  }
+  st.autoTriedOther = false;
+  anaInstallDerived();
+  statusEl.textContent = ANA_MODES[st.mode] + ' (\u03C3=' + st.sigma + ')' +
+    (st.mode === 'curv2d' ? ' w=' + st.weight2d : '') +
+    (st.mode === 'sym' ? ' E_F=' + ((typeof st.ef === 'number') ? st.ef : 'auto') : '') +
+    (analysisRidges && analysisRidges.length && analysisRidges[0] > 0 ? ' | ridge segments: ' + analysisRidges[0] + ' (' + (st.lastOrient === 'row' ? 'MDC' : 'EDC') + ', ' + (st.lastPolarity || 'abs') + ')' : '');
+}
+
+// Install the derived (or raw) image into the viewer without resetting the view.
+function anaInstallDerived() {
+  const target = anaIsDerived() ? derivedData : physicalData;
+  if (!target) return;
+  const keepView = (view && currentData && currentData.array.dims[0] === target.array.dims[0] &&
+                    currentData.array.dims[1] === target.array.dims[1]) ? view : null;
+  currentData = target;
+  const { array } = target; const ny = array.dims[0], nx = array.dims[1];
+  heatBuf.width = nx; heatBuf.height = ny;
+  heatImg = heatBufCtx.createImageData(nx, ny);
+  heatU32 = new Uint32Array(heatImg.data.buffer);
+  const vals = array.values;
+  let m0 = Infinity, m1 = -Infinity;
+  for (let i = 0; i < vals.length; i++) { const v = vals[i]; if (v !== v) continue; if (v < m0) m0 = v; if (v > m1) m1 = v; }
+  dataMin = isFinite(m0) ? m0 : 0; dataMax = isFinite(m1) ? m1 : 1;
+  if (anaIsDerived()) {
+    const pr = anaPercentileRange(vals);
+    if (pr) { dataMin = pr.min; dataMax = pr.max; } // auto-contrast: robust range for derived images
+  }
+  colorScale = { min: dataMin, max: dataMax, range: dataMax - dataMin || 1 };
+  profileState = null; colScratch = null; profileBuckets = null;
+  cbarStrip = null; cbarStripKey = null;
+  view = keepView || { i0: 0, i1: nx - 1, j0: 0, j1: ny - 1 };
+  if (!cursorIdx || cursorIdx.cx >= nx || cursorIdx.cy >= ny) cursorIdx = { cx: nx >> 1, cy: ny >> 1, fi: nx >> 1, fj: ny >> 1 };
+  resizeCanvases();
+  renderHeatBuffer();
+  drawHeatmapWithAxes();
+  drawColorbar();
+  drawOverlayNow(crossPx ? lastHoverPt : null);
+  drawProfilesIfNeeded(cursorIdx.cx, cursorIdx.cy, (cursorIdx.fi != null ? cursorIdx.fi : cursorIdx.cx), (cursorIdx.fj != null ? cursorIdx.fj : cursorIdx.cy));
+  zminEl.value = dataMin.toExponential(3); zmaxEl.value = dataMax.toExponential(3);
+  if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+  dirtyHeat = dirtyRecolor = dirtyProfiles = dirtyColorbar = dirtyOverlay = dirtyCursor = false;
+  pendingCross = null; pendingCursor = null;
+}
+
+function drawRidgeOverlay() {
+  if (!analysisRidges || !analysisRidges.length || analysisRidges[0] < 1) return;
+  if (!anaIsDerived() || !currentData || !view || !plotGeo) return;
+  const theme = getTheme();
+  const { ox, oy, dw, dh } = plotGeo;
+  octx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  octx.save();
+  octx.beginPath();
+  octx.rect(ox, oy, dw, dh);   // clip to the plot area so ridges never spill into the axes
+  octx.clip();
+  octx.strokeStyle = theme === 'dark' ? '#ffd166' : '#d62728';
+  octx.lineWidth = 1.5;
+  const s = analysisRidges;
+  let w = 1;
+  for (let g = 0; g < s[0]; g++) {
+    const L = s[w++];
+    octx.beginPath();
+    for (let q = 0; q < L; q++) {
+      const a = s[w++], fp = s[w++]; const cv = s[w++]; // (a: scan-line idx, fp: sub-pixel position, cv: strength)
+      let px, py;
+      // Screen convention (top-origin): array row j renders at
+      // py = oy + ((j - j0)/(j1 - j0)) * dh (row j0 at the TOP), matching the heatmap
+      // drawImage, the crosshair and the pointer.
+      if (analysisState.lastOrient === 'row') { // a = row j, fp = x index
+        px = ox + ((fp - view.i0) / (view.i1 - view.i0)) * dw;
+        py = oy + ((a - view.j0) / (view.j1 - view.j0)) * dh;
+      } else {                                   // a = column i, fp = row index
+        px = ox + ((a - view.i0) / (view.i1 - view.i0)) * dw;
+        py = oy + ((fp - view.j0) / (view.j1 - view.j0)) * dh;
+      }
+      if (q === 0) octx.moveTo(px, py); else octx.lineTo(px, py);
+    }
+    octx.stroke();
+  }
+  octx.restore();
+}
+
+function exportRidgeCSV() {
+  if (!analysisRidges || !analysisRidges.length || analysisRidges[0] < 1) {
+    statusEl.textContent = 'No ridge segments to export (enable Ridge with an analysis mode)';
+    return;
+  }
+  const rowOrient = analysisState.lastOrient === 'row';
+  const xl = currentData.xaxis.label || 'X', yl = currentData.yaxis.label || 'Y';
+  const ux = currentData.xaxis.unit || '', uy = currentData.yaxis.unit || '';
+  const lines = ['# Spectral Viewer ridge export'];
+  lines.push('# mode=' + analysisState.mode + ' sigma=' + analysisState.sigma + ' threshold=' + analysisState.sens + ' orientation=' + (rowOrient ? 'k(omega)' : 'omega(k)') + ' polarity=' + (analysisState.lastPolarity || 'abs'));
+  lines.push(rowOrient
+    ? (yl + '[' + uy + '],' + xl + '[' + ux + '],' + '|C|,segment')
+    : (xl + '[' + ux + '],' + yl + '[' + uy + '],' + '|C|,segment'));
+  const s = analysisRidges;
+  let w = 1;
+  for (let g = 0; g < s[0]; g++) {
+    const L = s[w++];
+    for (let q = 0; q < L; q++) {
+      const a = s[w++], fp = s[w++], cv = s[w++];
+      const XV = indexToX(rowOrient ? fp : a);
+      const YV = rowToEnergy(rowOrient ? a : fp); // array row -> physical energy (parser row-flip)
+      lines.push(rowOrient
+        ? (YV.toPrecision(8) + ',' + XV.toPrecision(8) + ',' + cv.toExponential(4) + ',' + (g + 1))
+        : (XV.toPrecision(8) + ',' + YV.toPrecision(8) + ',' + cv.toExponential(4) + ',' + (g + 1)));
+    }
+  }
+  const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+  const link = document.createElement('a');
+  link.download = 'ridges_' + ((physicalData && physicalData.objectName) || 'data') + '_' + analysisState.mode + '.csv';
+  link.href = URL.createObjectURL(blob);
+  link.click();
+  setTimeout(function () { URL.revokeObjectURL(link.href); }, 5000);
+  statusEl.textContent = 'Exported ' + s[0] + ' ridge segment(s) as CSV';
+}
+
+// ===== Init =====
+buildLUT();
+initTheme();
+refreshRects();
+anaControlsEnable();
+loadDemo();
+</script>
+</body>
+</html>
