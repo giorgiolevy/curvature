@@ -124,6 +124,7 @@ label .efsub { font-size: 0.72em; margin-left: -0.12em; vertical-align: sub; }
     </label>
     <label>Ridge:
       <input type="checkbox" id="anaRidge" title="Track the strongest dispersion crest per scan line (continuity-constrained DP) and overlay it on the map." disabled onchange="onRidgeToggle()">
+      <span id="ridgeOpts">
       <select id="anaOrient" title="Scan direction for the ridge: auto picks MDC (k per w) for k-derivatives, EDC (w per k) for energy-derivatives." disabled onchange="onOrientChange()">
         <option value="auto">auto</option>
         <option value="row">k(&#969;) MDC</option>
@@ -134,16 +135,25 @@ label .efsub { font-size: 0.72em; margin-left: -0.12em; vertical-align: sub; }
         <option value="pos">+ crest</option>
         <option value="neg">&#8722; crest</option>
       </select>
+      <select id="anaMethod" title="Ridge detection method. 'value' = local maxima above the &theta; threshold (original). 'prominence' = per-line topographic prominence above the &pi; threshold (more robust to a sloping background). Both use the same continuity-constrained DP tracker." disabled onchange="onMethodChange()">
+        <option value="dp" selected>value</option>
+        <option value="prom">prominence</option>
+      </select>
+      <label id="anaPromLabel">&#960;:
+        <input type="range" id="anaProm" title="Prominence threshold: a per-line peak is kept only if its topographic prominence exceeds &pi; x (p99.9 of |curvature|). Used by the 'prominence' method." min="0.02" max="0.6" step="0.01" value="0.15" style="width:64px" disabled oninput="onPromLabel()" onchange="onPromChange()">
+        <span id="anaPromVal">0.15</span>
+      </label>
+      <label id="anaThetaLabel">&#952;:
+        <input type="range" id="anaSens" title="Ridge threshold: a crest must exceed th x (p99.9 of |curvature|) to be tracked. Lower = more sensitive (noisier); higher = only the strongest crests." min="0.05" max="0.6" step="0.05" value="0.3" style="width:64px" disabled oninput="onSensLabel()" onchange="onSensChange()">
+        <span id="anaSensVal">0.30</span>
+        <button onclick="exportRidgeCSV()">&#11015; CSV</button>
+      </label>
+      </span>
     </label>
     <label>w<sub>2D</sub>:
       <input type="text" id="anaW2d" inputmode="decimal" placeholder="1" style="width:46px" disabled
              title="MDC-curvature weight w in C2D = C_EDC + w*C_MDC (weight2d in Zhang et al.). Only used by Curvature 2D."
              onfocus="this.select()" onchange="onW2dChange()">
-    </label>
-    <label>&#952;:
-      <input type="range" id="anaSens" title="Ridge threshold: a crest must exceed th x (p99.9 of |curvature|) to be tracked. Lower = more sensitive (noisier); higher = only the strongest crests." min="0.05" max="0.6" step="0.05" value="0.3" style="width:64px" disabled oninput="onSensLabel()" onchange="onSensChange()">
-      <span id="anaSensVal">0.30</span>
-      <button onclick="exportRidgeCSV()">&#11015; CSV</button>
     </label>
     <span id="fileInfo">No file loaded</span>
     <span id="status"></span>
@@ -741,6 +751,33 @@ function anaResampleRows(A, nx, ny, ay) {
   }
   return { vals: out, ay: u };
 }
+
+// Resample data given on axis srcAx onto the positions dstAx (same length n). Used to move a
+// result computed on a uniform grid BACK onto the original (possibly non-uniform) axis so the
+// displayed axis matches the raw file. alongX=true resamples along x (columns), else along y.
+function anaResampleToAxis(A, nx, ny, srcAx, dstAx, alongX) {
+  const n = srcAx.length;
+  const out = new Float64Array(nx * ny);
+  const asc = srcAx[n - 1] >= srcAx[0];
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      // position along the resampled direction
+      const v = alongX ? dstAx[i] : dstAx[j];
+      // locate v in srcAx (linear search, direction-aware)
+      let lo = 0;
+      if (asc) { while (lo < n - 2 && srcAx[lo + 1] < v) lo++; }
+      else { while (lo < n - 2 && srcAx[lo + 1] > v) lo++; }
+      const a0 = srcAx[lo], a1 = srcAx[lo + 1];
+      const f = a1 === a0 ? 0 : (v - a0) / (a1 - a0);
+      if (alongX) {
+        out[j * nx + i] = A[j * nx + lo] * (1 - f) + A[j * nx + (lo + 1)] * f;
+      } else {
+        out[j * nx + i] = A[lo * nx + i] * (1 - f) + A[(lo + 1) * nx + i] * f;
+      }
+    }
+  }
+  return out;
+}
 // ARPES: Fermi-level symmetrization I(k,w) -> [I(k,w) + I(k,-w)]/2 about E_F.
 // ef is in the SAME units as the provided y-axis; we locate the nearest row and mirror
 // about it with linear interpolation so the result lives on the original grid.
@@ -766,38 +803,50 @@ function anaSymmetrize(A, nx, ny, yax, ef) {
 function anaCompute(vals, nx, ny, xax, yax, mode, sigma, w2d, opts) {
   const A = new Float64Array(nx * ny);
   for (let p = 0; p < A.length; p++) { const v = vals[p]; A[p] = Number.isFinite(v) ? v : 0; }
+  // Keep the ORIGINAL axes so the displayed axis always matches the raw file, even if we must
+  // resample internally to compute uniform-spacing derivatives.
+  const rawX = xax, rawY = yax;
   let xU = xax, yU = yax, AU = A;
+  let resampledX = false, resampledY = false;
   if (mode !== 'raw') {
-    if (!anaAxisUniform(xU)) { const R = anaResampleColumns(AU, nx, ny, xU); AU = R.vals; xU = R.ax; }
-    if (!anaAxisUniform(yU)) { const R = anaResampleRows(AU, nx, ny, yU); AU = R.vals; yU = R.ay; }
+    if (!anaAxisUniform(xU)) { const R = anaResampleColumns(AU, nx, ny, xU); AU = R.vals; xU = R.ax; resampledX = true; }
+    if (!anaAxisUniform(yU)) { const R = anaResampleRows(AU, nx, ny, yU); AU = R.vals; yU = R.ay; resampledY = true; }
   }
   const dk = xU.length > 1 ? (xU[nx - 1] - xU[0]) / (nx - 1) : 1;
   const dw = yU.length > 1 ? (yU[ny - 1] - yU[0]) / (ny - 1) : 1;
+  // Map a result computed on the (possibly uniform) grid xU/yU back onto the ORIGINAL axis, and
+  // report the original axis so the viewer shows the raw file's axis for every mode.
+  const finish = function (out) {
+    if (resampledX) out = anaResampleToAxis(out, nx, ny, xU, rawX, true);
+    if (resampledY) out = anaResampleToAxis(out, nx, ny, yU, rawY, false);
+    return { vals: out, xax: rawX, yax: rawY };
+  };
   if (mode === 'sym') { // Fermi symmetrization (needs ef in opts)
     const ef = (opts && typeof opts.ef === 'number') ? opts.ef : ((yU[0] + yU[ny - 1]) / 2);
-    return { vals: anaSymmetrize(AU, nx, ny, yU, ef), xax: xU, yax: yU };
+    // symmetrize about ef in the CURRENT (uniform) energy grid, then map back
+    return finish(anaSymmetrize(AU, nx, ny, yU, ef));
   }
-  if (mode === 'raw') return { vals: AU, xax: xU, yax: yU };
+  if (mode === 'raw') return { vals: AU, xax: rawX, yax: rawY };
   const K = anaKernels(sigma);
-  if (mode === 'd2k') return { vals: anaConvRows(AU, nx, ny, K.dd, 1 / (dk * dk)), xax: xU, yax: yU };
-  if (mode === 'd2w') return { vals: anaConvCols(AU, nx, ny, K.dd, 1 / (dw * dw)), xax: xU, yax: yU };
+  if (mode === 'd2k') return finish(anaConvRows(AU, nx, ny, K.dd, 1 / (dk * dk)));
+  if (mode === 'd2w') return finish(anaConvCols(AU, nx, ny, K.dd, 1 / (dw * dw)));
   if (mode === 'grad') {
     const gx = anaConvRows(AU, nx, ny, K.d, 1 / dk), gy = anaConvCols(AU, nx, ny, K.d, 1 / dw);
     const out = new Float64Array(nx * ny);
     for (let p = 0; p < out.length; p++) out[p] = Math.hypot(gx[p], gy[p]);
-    return { vals: out, xax: xU, yax: yU };
+    return finish(out);
   }
   if (mode === 'curv_k') {
     const Ik = anaConvRows(AU, nx, ny, K.d, 1 / dk), Ikk = anaConvRows(AU, nx, ny, K.dd, 1 / (dk * dk));
     const out = new Float64Array(nx * ny);
     for (let p = 0; p < out.length; p++) { const g = Ik[p]; out[p] = -Ikk[p] / Math.pow(1 + g * g, 1.5); }
-    return { vals: out, xax: xU, yax: yU };
+    return finish(out);
   }
   if (mode === 'curv_w') {
     const Iw = anaConvCols(AU, nx, ny, K.d, 1 / dw), Iww = anaConvCols(AU, nx, ny, K.dd, 1 / (dw * dw));
     const out = new Float64Array(nx * ny);
     for (let p = 0; p < out.length; p++) { const g = Iw[p]; out[p] = -Iww[p] / Math.pow(1 + g * g, 1.5); }
-    return { vals: out, xax: xU, yax: yU };
+    return finish(out);
   }
   if (mode === 'curv2d') {
     // Zhang et al. (2011): C2D = C_EDC + w2d * C_MDC, each 1D curvature -I''/(1+I'^2)^(3/2).
@@ -810,7 +859,7 @@ function anaCompute(vals, nx, ny, xax, yax, mode, sigma, w2d, opts) {
       const ck = -Ikk[p] / Math.pow(1 + Ik[p] * Ik[p], 1.5);
       out[p] = cw + w * ck;
     }
-    return { vals: out, xax: xU, yax: yU };
+    return finish(out);
   }
   throw new Error("Unknown analysis mode: " + mode);
 }
@@ -933,18 +982,206 @@ function anaDpRidges(C, nx, ny, orient, sens, sigma, maxPaths, polarity) {
   return { results: results, scale: scale };
 }
 function anaRidgeSegments(C, nx, ny, orient, sens, sigma, polarity) {
+  // Single-orientation tracker (value-threshold detection), emitted in the ORIENTED layout:
+  //   [count, orient, len, (a,fp,v)*len, orient, len, ...]  orient: 0=row, 1=col
+  const o = (orient === 'col') ? 1 : 0;
   const R = anaDpRidges(C, nx, ny, orient, sens, sigma, 6, polarity);
-  const segs = R.results;
-  if (!segs.length) return new Float64Array([0]);
+  const segs = R.results.map(function (s) { return { orient: o, pts: s }; });
+  return anaPackSegmentsOriented(segs);
+}
+function anaRidgeSegmentsP(C, nx, ny, orient, promSens, sigma, polarity) {
+  // Single-orientation tracker (prominence detection), oriented layout.
+  const o = (orient === 'col') ? 1 : 0;
+  const R = anaDpRidgesP(C, nx, ny, orient, promSens, sigma, 6, polarity);
+  const segs = R.results.map(function (s) { return { orient: o, pts: s }; });
+  return anaPackSegmentsOriented(segs);
+}
+
+// ===== Prominence-based ridge detection (option-1: prominence candidates + DP continuity) =====
+// anaProminencePeaks: for one scan line (array of length nPos, already signed per polarity),
+// find local maxima and their topographic prominence, then keep those whose prominence >= thr
+// (thr in the same units as the values). Prominence = min descent to a higher peak on either side.
+// Returns array of positions (p) whose prominence passes; deterministic O(nPos) per line.
+function anaProminencePeaks(line, nPos, thr) {
+  const out = [];
+  // find local maxima indices
+  let i = 1;
+  while (i < nPos - 1) {
+    if (line[i] >= line[i - 1] && line[i] >= line[i + 1]) {
+      // extend plateau of equal values to its right
+      let j = i;
+      while (j + 1 < nPos && line[j + 1] === line[i]) j++;
+      const vpeak = line[i];
+      // left descent: walk left until a higher value is found; track min along the way
+      let minL = vpeak;
+      for (let k = i - 1; k >= 0; k--) { if (line[k] > vpeak) break; if (line[k] < minL) minL = line[k]; }
+      let minR = vpeak;
+      for (let k = j + 1; k < nPos; k++) { if (line[k] > vpeak) break; if (line[k] < minR) minR = line[k]; }
+      const base = Math.max(minL, minR);
+      const prom = vpeak - base;
+      if (prom >= thr) out.push(Math.floor((i + j) / 2));
+      i = j + 1;
+    } else {
+      i++;
+    }
+  }
+  return out;
+}
+// anaDpRidgesP: same continuity-constrained DP as anaDpRidges, but candidates come from a
+// PROMINENCE criterion on each scan line (instead of "local max above a value threshold").
+// promSens is the prominence threshold as a fraction of the robust p99.9 scale.
+function anaDpRidgesP(C, nx, ny, orient, promSens, sigma, maxPaths, polarity) {
+  const pol = (polarity === 'pos' || polarity === 'neg') ? polarity : 'abs';
+  const polar = (pol === 'neg') ? -1 : 1;
+  const scale = Math.max(anaRobustScale(C), 1e-300);
+  const m0 = (sigma <= 0 ? 2 : Math.max(1, Math.ceil(3.5 * sigma))) + 2;
+  const nScan = (orient === 'row') ? ny : nx;
+  const nPos = (orient === 'row') ? nx : ny;
+  const margin = Math.min(m0, Math.max(0, Math.floor((nPos - 3) / 2)));
+  if (nPos <= 2 * margin + 3 || nScan < 4) return { results: [], scale: scale };
+  // value accessor, signed by polarity like anaDpRidges (so thresholds are sign-consistent)
+  const at = function (s, p) { const c = (orient === 'row') ? C[s * nx + p] : C[p * nx + s]; return (pol === 'abs') ? Math.abs(c) : polar * c; };
+  const promThr = (promSens == null ? 0.15 : promSens) * scale; // prominence in robust-scale units
+  const LAM = 1 / 100;
+  const MAXP = maxPaths || 6, EXCL = 6, MIN_LEN = 12, MAX_JUMP = 10;
+  // Build per-line candidate list from prominence, inside the margin.
+  const cands = [];
+  const lineBuf = new Float64Array(nPos);
+  for (let s = 0; s < nScan; s++) {
+    for (let p = 0; p < nPos; p++) lineBuf[p] = -Infinity;
+    for (let p = margin + 1; p < nPos - margin - 1; p++) lineBuf[p] = at(s, p);
+    const peaks = anaProminencePeaks(lineBuf, nPos, promThr);
+    // keep the strongest few by value to bound DP cost
+    if (peaks.length > 10) {
+      const sRef = s;
+      peaks.sort(function (a, b) { return at(sRef, b) - at(sRef, a); });
+      peaks.length = 10;
+      peaks.sort(function (a, b) { return a - b; });
+    }
+    cands.push(peaks);
+  }
+  const used = new Uint8Array(nScan * nPos);
+  const results = [];
+  for (let path = 0; path < MAXP; path++) {
+    const dpVal = new Float64Array(nScan), dpPos = new Int32Array(nScan);
+    let anyCand = false;
+    for (let s = 0; s < nScan; s++) {
+      let bv = (s > 0) ? dpVal[s - 1] : 0, bp = -1;
+      const cl = cands[s];
+      for (let ci = 0; ci < cl.length; ci++) {
+        const p = cl[ci];
+        if (used[s * nPos + p]) continue;
+        anyCand = true;
+        const gain = at(s, p) / scale;
+        let cur;
+        if (s === 0) cur = gain;
+        else {
+          const pp = dpPos[s - 1];
+          cur = (pp < 0) ? gain : dpVal[s - 1] + gain - LAM * (p - pp) * (p - pp);
+        }
+        if (cur > bv) { bv = cur; bp = p; }
+      }
+      dpVal[s] = bv; dpPos[s] = bp;
+    }
+    if (!anyCand) break;
+    let bestEnd = -1, bestV = -Infinity;
+    for (let s = 0; s < nScan; s++) if (dpVal[s] > bestV) { bestV = dpVal[s]; bestEnd = s; }
+    if (bestEnd < 0) break;
+    const raw = [];
+    for (let s = bestEnd; s >= 0; s--) { const p = dpPos[s]; if (p >= 0) raw.push([s, p]); }
+    raw.reverse();
+    if (raw.length < MIN_LEN) break;
+    const pts = [];
+    let prevP = null;
+    for (let q = 0; q < raw.length; q++) {
+      const s = raw[q][0], p = raw[q][1];
+      const v = at(s, p);
+      if (!(v > -Infinity)) { prevP = null; continue; }
+      if (prevP !== null && Math.abs(p - prevP) > MAX_JUMP) {
+        if (pts.length >= MIN_LEN) results.push(pts.slice());
+        pts.length = 0;
+      }
+      let fp = p;
+      if (p > margin && p < nPos - 1 - margin) {
+        const ym = at(s, p - 1), yc = at(s, p), yp = at(s, p + 1);
+        const den = ym - 2 * yc + yp;
+        if (Math.abs(den) > 1e-300) fp = p + Math.max(-1, Math.min(1, 0.5 * (ym - yp) / den));
+      }
+      pts.push([s, fp, v]);
+      prevP = p;
+    }
+    if (pts.length >= MIN_LEN) results.push(pts.slice());
+    if (!results.length) break;
+    for (let g2 = 0; g2 < results.length; g2++) {
+      const seg = results[g2];
+      for (let qi = 0; qi < seg.length; qi++) {
+        const s0 = seg[qi][0], p0 = Math.floor(seg[qi][1]);
+        const lo2 = Math.max(0, p0 - EXCL), hi2 = Math.min(nPos - 1, p0 + EXCL);
+        for (let q2 = lo2; q2 <= hi2; q2++) used[s0 * nPos + q2] = 1;
+      }
+    }
+  }
+  return { results: results, scale: scale };
+}
+// Union of two orientation runs (row-found and col-found segments). Each segment is
+// { orient: 0(row)/1(col), pts: [[a,fp,v],...] }. We keep all of set A and add set-B segments
+// that are NOT substantially covered by set A (grid-based overlap test), so the two orientations'
+// views of the same band are not drawn twice. Segments stay continuous within themselves (DP).
+function anaOverlapsGrid(segA, segB, nx, ny) {
+  const grid = 24;
+  const cw = Math.max(1, Math.floor(nx / grid)), ch = Math.max(1, Math.floor(ny / grid));
+  const gw = Math.ceil(nx / cw) + 1, gh = Math.ceil(ny / ch) + 1;
+  const occ = new Uint8Array(gw * gh);
+  const cell = function (x, y) { const gx = Math.floor(x / cw), gy = Math.floor(y / ch); return (gx >= 0 && gy >= 0 && gx < gw && gy < gh) ? (gy * gw + gx) : -1; };
+  for (let g = 0; g < segA.length; g++) {
+    const o = segA[g].orient, pts = segA[g].pts;
+    for (let q = 0; q < pts.length; q++) {
+      const a = pts[q][0], fp = pts[q][1];
+      const x = (o === 0) ? fp : a, y = (o === 0) ? a : fp;
+      const c = cell(x, y); if (c >= 0) occ[c] = 1;
+    }
+  }
+  const keep = [];
+  for (let g = 0; g < segB.length; g++) {
+    const o = segB[g].orient, pts = segB[g].pts;
+    let hit = 0;
+    for (let q = 0; q < pts.length; q++) {
+      const a = pts[q][0], fp = pts[q][1];
+      const x = (o === 0) ? fp : a, y = (o === 0) ? a : fp;
+      const c = cell(x, y); if (c >= 0 && occ[c]) hit++;
+    }
+    if (hit < 0.5 * pts.length) keep.push(segB[g]);
+  }
+  return keep;
+}
+// anaRidgeAuto: run the tracker along BOTH orientations and return the union (de-duplicated),
+// i.e. "auto" = union of the ridges found from the k data and the energy data, each kept
+// continuous by the DP. Boot distinguishes the detection method (prominence vs value threshold).
+function anaRidgeAuto(C, nx, ny, sens, promSens, sigma, polarity, useProminence) {
+  const run = function (orient) {
+    const R = useProminence
+      ? anaDpRidgesP(C, nx, ny, orient, promSens, sigma, 6, polarity)
+      : anaDpRidges(C, nx, ny, orient, sens, sigma, 6, polarity);
+    return R.results.map(function (s) { return s.map(function (q) { return { a: q[0], fp: q[1], v: q[2] }; }); });
+  };
+  const row = run('row').map(function (s) { return { orient: 0, pts: s }; });
+  const col = run('col').map(function (s) { return { orient: 1, pts: s }; });
+  const merged = row.concat(anaOverlapsGrid(row, col, nx, ny));
+  return anaPackSegmentsOriented(merged);
+}
+// Pack oriented segments [{orient, pts}] into the flat layout:
+//   [count, orient0, len0, (a,fp,v)*len0, orient1, len1, ...]
+function anaPackSegmentsOriented(segs) {
+  if (!segs || !segs.length) return new Float64Array([0]);
   let total = 1;
-  for (let g = 0; g < segs.length; g++) total += 1 + segs[g].length * 3;
+  for (let g = 0; g < segs.length; g++) total += 2 + segs[g].pts.length * 3;
   const out = new Float64Array(total);
   out[0] = segs.length;
   let w = 1;
   for (let g = 0; g < segs.length; g++) {
-    const sgm = segs[g];
-    out[w++] = sgm.length;
-    for (let q = 0; q < sgm.length; q++) { out[w++] = sgm[q][0]; out[w++] = sgm[q][1]; out[w++] = sgm[q][2]; }
+    const o = segs[g].orient, pts = segs[g].pts;
+    out[w++] = o; out[w++] = pts.length;
+    for (let q = 0; q < pts.length; q++) { out[w++] = pts[q][0]; out[w++] = pts[q][1]; out[w++] = pts[q][2]; }
   }
   return out;
 }
@@ -986,7 +1223,17 @@ function makeParseWorkerURL() {
     "  if (d.cmd === 'analysis') {",
     "    try {",
     "      const R = anaCompute(d.vals, d.nx, d.ny, d.xax, d.yax, d.mode, d.sigma, d.w2d, d.opts);",
-    "      const segs = (d.wantRidge && d.mode !== 'raw') ? anaRidgeSegments(R.vals, d.nx, d.ny, d.orient, d.sens, d.sigma, d.polarity) : new Float64Array([0]);",
+    "      let segs = new Float64Array([0]);",
+    "      if (d.wantRidge && d.mode !== 'raw') {",
+    "        const useP = (d.ridgeMethod === 'prom');",
+    "        if (d.orient === 'auto') {",
+    "          segs = anaRidgeAuto(R.vals, d.nx, d.ny, d.sens, d.promSens, d.sigma, d.polarity, useP);",
+    "        } else if (useP) {",
+    "          segs = anaRidgeSegmentsP(R.vals, d.nx, d.ny, d.orient, d.promSens, d.sigma, d.polarity);",
+    "        } else {",
+    "          segs = anaRidgeSegments(R.vals, d.nx, d.ny, d.orient, d.sens, d.sigma, d.polarity);",
+    "        }",
+    "      }",
     "      self.postMessage({ cmd: 'analysis', ok: true, reqId: d.reqId, vals: R.vals, xax: R.xax, yax: R.yax, segs: segs },",
     "        [R.vals.buffer, R.xax.buffer, R.yax.buffer, segs.buffer]);",
     "    } catch (err) { self.postMessage({ cmd: 'analysis', ok: false, reqId: d.reqId, error: (err && err.message) ? err.message : String(err) }); }",
@@ -1882,14 +2129,14 @@ function loadDemo() {
 function showLoading(t) { document.getElementById('loadText').textContent = t; document.getElementById('loadOverlay').style.display = 'flex'; }
 function hideLoading() { document.getElementById('loadOverlay').style.display = 'none'; }
 
-window.loadFile = loadFile; window.loadDemo = loadDemo; window.resetView = resetView; window.changeColormap = changeColormap; window.toggleInvert = toggleInvert; window.updateZRange = updateZRange; window.savePNG = savePNG; window.toggleTheme = toggleTheme; window.onAnalysisMode = onAnalysisMode; window.onSigmaLabel = onSigmaLabel; window.onSigmaChange = onSigmaChange; window.onSensLabel = onSensLabel; window.onSensChange = onSensChange; window.onW2dChange = onW2dChange; window.onEFChange = onEFChange; window.onRidgeToggle = onRidgeToggle; window.onOrientChange = onOrientChange; window.onPolarityChange = onPolarityChange; window.exportRidgeCSV = exportRidgeCSV;
+window.loadFile = loadFile; window.loadDemo = loadDemo; window.resetView = resetView; window.changeColormap = changeColormap; window.toggleInvert = toggleInvert; window.updateZRange = updateZRange; window.savePNG = savePNG; window.toggleTheme = toggleTheme; window.onAnalysisMode = onAnalysisMode; window.onSigmaLabel = onSigmaLabel; window.onSigmaChange = onSigmaChange; window.onSensLabel = onSensLabel; window.onSensChange = onSensChange; window.onW2dChange = onW2dChange; window.onEFChange = onEFChange; window.onRidgeToggle = onRidgeToggle; window.onOrientChange = onOrientChange; window.onPolarityChange = onPolarityChange; window.onMethodChange = onMethodChange; window.onPromLabel = onPromLabel; window.onPromChange = onPromChange; window.exportRidgeCSV = exportRidgeCSV;
 
 
 // ===== Dispersion analysis: UI state, worker routing, overlay & CSV =====
 let physicalData = null;    // raw parsed dataset (always kept)
 let derivedData = null;     // analysis image wrapped as a data-like object
 let analysisRidges = null;  // encoded ridge segments (Float64Array) or null
-const analysisState = { mode: 'raw', sigma: 2.0, wantRidge: false, sens: 0.30, orient: 'auto', polarity: 'abs', weight2d: 1.0, ef: null, lastReqId: 0, lastOrient: 'row', epoch: 0, peakInfo: null, autoTriedOther: false, lastPolarity: 'abs' };
+const analysisState = { mode: 'raw', sigma: 2.0, wantRidge: false, sens: 0.30, orient: 'auto', polarity: 'abs', weight2d: 1.0, ef: null, lastReqId: 0, lastOrient: 'row', epoch: 0, peakInfo: null, autoTriedOther: false, lastPolarity: 'abs', ridgeMethod: 'dp', promSens: 0.15 };
 const anaEpochs = {};       // reqId -> epoch snapshot (reject results from a previous file)
 const ANA_MODES = {
   raw: 'Raw',
@@ -1949,6 +2196,13 @@ function onPolarityChange() {
   analysisState.polarity = document.getElementById('anaPolarity').value;
   if (analysisState.wantRidge && physicalData) { analysisState.autoTriedOther = false; anaStart(); }
 }
+function onMethodChange() {
+  analysisState.ridgeMethod = document.getElementById('anaMethod').value;
+  anaControlsEnable();
+  if (analysisState.wantRidge && physicalData) anaStart();
+}
+function onPromLabel() { const el = document.getElementById('anaPromVal'); if (el) el.textContent = parseFloat(document.getElementById('anaProm').value).toFixed(2); }
+function onPromChange() { onPromLabel(); analysisState.promSens = parseFloat(document.getElementById('anaProm').value); if (analysisState.wantRidge && physicalData) anaStart(); }
 function anaControlsEnable() {
   const dis = !anaIsDerived();
   document.getElementById('anaSigma').disabled = dis;
@@ -1957,8 +2211,20 @@ function anaControlsEnable() {
   document.getElementById('anaOrient').disabled = rdis;
   document.getElementById('anaPolarity').disabled = rdis;
   document.getElementById('anaSens').disabled = rdis;
+  const mMeth = document.getElementById('anaMethod'); if (mMeth) mMeth.disabled = dis;
+  const promEl = document.getElementById('anaProm'); if (promEl) promEl.disabled = (rdis || analysisState.ridgeMethod !== 'prom');
   document.getElementById('anaW2d').disabled = (analysisState.mode !== 'curv2d');
   // E_F is meaningful to set at any time (it also seeds future symmetrizations), so keep it enabled.
+  // Ridge parameters are ALWAYS shown (not hidden behind the Ridge checkbox). They are simply
+  // disabled (greyed) when no analysis mode is active or Ridge is unchecked — see `dis`/`rdis`
+  // above, which already disable orient/polarity/theta/method/prominence in that case.
+  const ridgeOpts = document.getElementById('ridgeOpts');
+  if (ridgeOpts) ridgeOpts.style.display = '';
+  // The π threshold applies only to 'prominence'; the θ threshold only to 'value', so show the
+  // relevant one (both groups remain in the always-visible cluster).
+  const useProm = (analysisState.ridgeMethod === 'prom');
+  const piLbl = document.getElementById('anaPromLabel'); if (piLbl) piLbl.style.display = (useProm ? '' : 'none');
+  const thLbl = document.getElementById('anaThetaLabel'); if (thLbl) thLbl.style.display = (useProm ? 'none' : '');
 }
 
 function anaStart() {
@@ -1975,9 +2241,9 @@ function anaStart() {
   const reqId = ++st.lastReqId;
   const epoch = st.epoch;
   anaEpochs[reqId] = epoch;
+  // For explicit row/col we track that one direction; for 'auto' the ridge runs BOTH directions
+  // and returns their union (anaRidgeAuto), so no orientation fallback is needed here.
   let orient = st.orient === 'auto' ? anaAutoOrient(st.mode) : st.orient;
-  // Auto orientation fallback: if the auto-picked scan direction yields no ridge, retry the other.
-  if (st.orient === 'auto' && st.autoTriedOther) { orient = (orient === 'row') ? 'col' : 'row'; }
   st.lastOrient = orient;
   st.lastPolarity = st.polarity;
   const ef = (typeof st.ef === 'number') ? st.ef : ((d.yaxis.values[0] + d.yaxis.values[ny - 1]) / 2);
@@ -1989,7 +2255,17 @@ function anaStart() {
     setTimeout(function () {
       try {
         const R = anaCompute(valsCopy, nx, ny, xCopy, yCopy, st.mode, st.sigma, st.weight2d, { ef: ef });
-        const segs = st.wantRidge && st.mode !== 'raw' ? anaRidgeSegments(R.vals, nx, ny, orient, st.sens, st.sigma, st.polarity) : new Float64Array([0]);
+        let segs = new Float64Array([0]);
+        if (st.wantRidge && st.mode !== 'raw') {
+          const useP = (st.ridgeMethod === 'prom');
+          if (st.orient === 'auto') {
+            segs = anaRidgeAuto(R.vals, nx, ny, st.sens, st.promSens, st.sigma, st.polarity, useP);
+          } else if (useP) {
+            segs = anaRidgeSegmentsP(R.vals, nx, ny, orient, st.promSens, st.sigma, st.polarity);
+          } else {
+            segs = anaRidgeSegments(R.vals, nx, ny, orient, st.sens, st.sigma, st.polarity);
+          }
+        }
         anaFinish(reqId, R.vals, R.xax, R.yax, segs);
       } catch (err) { statusEl.textContent = 'Analysis error: ' + err.message; }
     }, 10);
@@ -2006,7 +2282,7 @@ function anaStart() {
     statusEl.textContent = 'Analysis worker error: ' + ((e && e.message) ? e.message : 'unknown');
   };
   w.postMessage({ cmd: 'analysis', reqId: reqId, vals: valsCopy, nx: nx, ny: ny, xax: xCopy, yax: yCopy,
-    mode: st.mode, sigma: st.sigma, orient: orient, wantRidge: st.wantRidge, sens: st.sens, polarity: st.polarity, w2d: st.weight2d, opts: { ef: ef } },
+    mode: st.mode, sigma: st.sigma, orient: orient, wantRidge: st.wantRidge, sens: st.sens, promSens: st.promSens, ridgeMethod: st.ridgeMethod, polarity: st.polarity, w2d: st.weight2d, opts: { ef: ef } },
     [valsCopy.buffer, xCopy.buffer, yCopy.buffer]);
 }
 
@@ -2023,19 +2299,14 @@ function anaFinish(reqId, vals, xax, yax, segs) {
              name: (d.array.name || 'Array'), label: ANA_MODES[st.mode] + ' [\u03C3=' + st.sigma + ']', unit: '' }
   };
   analysisRidges = st.wantRidge ? segs : null;
-  // Auto-orientation fallback: if ridge was requested, orient is auto, and NO segment was found,
-  // retry once with the other scan direction before giving up.
-  if (st.wantRidge && st.orient === 'auto' && (!analysisRidges || !(analysisRidges.length && analysisRidges[0] > 0)) && !st.autoTriedOther) {
-    st.autoTriedOther = true;
-    anaStart();
-    return;
-  }
-  st.autoTriedOther = false;
   anaInstallDerived();
+  const ridgeDesc = st.wantRidge
+    ? (' | ridge: ' + (analysisRidges && analysisRidges[0] > 0 ? analysisRidges[0] + ' seg (' + (st.orient === 'auto' ? 'auto union' : (st.lastOrient === 'row' ? 'MDC' : 'EDC')) + ', ' + (st.ridgeMethod === 'prom' ? 'prom' : 'dp') : 'none'))
+    : '';
   statusEl.textContent = ANA_MODES[st.mode] + ' (\u03C3=' + st.sigma + ')' +
     (st.mode === 'curv2d' ? ' w=' + st.weight2d : '') +
     (st.mode === 'sym' ? ' E_F=' + ((typeof st.ef === 'number') ? st.ef : 'auto') : '') +
-    (analysisRidges && analysisRidges.length && analysisRidges[0] > 0 ? ' | ridge segments: ' + analysisRidges[0] + ' (' + (st.lastOrient === 'row' ? 'MDC' : 'EDC') + ', ' + (st.lastPolarity || 'abs') + ')' : '');
+    ridgeDesc;
 }
 
 // Install the derived (or raw) image into the viewer without resetting the view.
@@ -2089,18 +2360,19 @@ function drawRidgeOverlay() {
   const s = analysisRidges;
   let w = 1;
   for (let g = 0; g < s[0]; g++) {
+    const orient = s[w++]; // per-segment: 0 = row (a=row, fp=x), 1 = col (a=col, fp=row)
     const L = s[w++];
     octx.beginPath();
     for (let q = 0; q < L; q++) {
       const a = s[w++], fp = s[w++]; const cv = s[w++]; // (a: scan-line idx, fp: sub-pixel position, cv: strength)
       let px, py;
       // Screen convention (top-origin): array row j renders at
-      // py = oy + ((j - j0)/(j1 - j0)) * dh (row j0 at the TOP), matching the heatmap
-      // drawImage, the crosshair and the pointer.
-      if (analysisState.lastOrient === 'row') { // a = row j, fp = x index
+      // py = oy + ((j - j0)/(j1 - j0)) * dh (row j0 at the TOP), matching the heatmap,
+      // the crosshair and the pointer. Orientation is stored PER SEGMENT (auto = union of both).
+      if (orient === 0) { // row: a = row j, fp = x index
         px = ox + ((fp - view.i0) / (view.i1 - view.i0)) * dw;
         py = oy + ((a - view.j0) / (view.j1 - view.j0)) * dh;
-      } else {                                   // a = column i, fp = row index
+      } else {            // col: a = column i, fp = row index
         px = ox + ((a - view.i0) / (view.i1 - view.i0)) * dw;
         py = oy + ((fp - view.j0) / (view.j1 - view.j0)) * dh;
       }
@@ -2116,25 +2388,22 @@ function exportRidgeCSV() {
     statusEl.textContent = 'No ridge segments to export (enable Ridge with an analysis mode)';
     return;
   }
-  const rowOrient = analysisState.lastOrient === 'row';
   const xl = currentData.xaxis.label || 'X', yl = currentData.yaxis.label || 'Y';
   const ux = currentData.xaxis.unit || '', uy = currentData.yaxis.unit || '';
   const lines = ['# Spectral Viewer ridge export'];
-  lines.push('# mode=' + analysisState.mode + ' sigma=' + analysisState.sigma + ' threshold=' + analysisState.sens + ' orientation=' + (rowOrient ? 'k(omega)' : 'omega(k)') + ' polarity=' + (analysisState.lastPolarity || 'abs'));
-  lines.push(rowOrient
-    ? (yl + '[' + uy + '],' + xl + '[' + ux + '],' + '|C|,segment')
-    : (xl + '[' + ux + '],' + yl + '[' + uy + '],' + '|C|,segment'));
+  lines.push('# mode=' + analysisState.mode + ' sigma=' + analysisState.sigma + ' threshold=' + analysisState.sens + ' polarity=' + (analysisState.lastPolarity || 'abs'));
+  lines.push(xl + '[' + ux + '],' + yl + '[' + uy + '],' + '|C|,segment,orient');
   const s = analysisRidges;
   let w = 1;
   for (let g = 0; g < s[0]; g++) {
+    const orient = s[w++]; // 0 = row (k-tracking), 1 = col (energy-tracking)
     const L = s[w++];
+    const rowOrient = (orient === 0);
     for (let q = 0; q < L; q++) {
       const a = s[w++], fp = s[w++], cv = s[w++];
       const XV = indexToX(rowOrient ? fp : a);
       const YV = rowToEnergy(rowOrient ? a : fp); // array row -> physical energy (parser row-flip)
-      lines.push(rowOrient
-        ? (YV.toPrecision(8) + ',' + XV.toPrecision(8) + ',' + cv.toExponential(4) + ',' + (g + 1))
-        : (XV.toPrecision(8) + ',' + YV.toPrecision(8) + ',' + cv.toExponential(4) + ',' + (g + 1)));
+      lines.push(XV.toPrecision(8) + ',' + YV.toPrecision(8) + ',' + cv.toExponential(4) + ',' + (g + 1) + ',' + (rowOrient ? 'row' : 'col'));
     }
   }
   const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
